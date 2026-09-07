@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Health MCP</title>
+  <meta name="description" content="A local-first MCP server setup that lets an AI assistant read one person's Google Health data — consented, read-only, on their own machine.">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700&family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='%230B7D6E'/%3E%3Cpath d='M22 52h14l7-18 12 34 8-22 5 6h10' fill='none' stroke='white' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+</head>
+<body>
+  <div class="wrap">
+    <nav class="nav" aria-label="Main">
+      <a class="brand" href="./"><span class="pulse" aria-hidden="true"></span>Health&nbsp;MCP</a>
+      <div class="nav-links">
+        <a href="#how">How it works</a>
+        <a href="#data">Data</a>
+        <a href="#quickstart">Quickstart</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="#" id="gh-link-nav">GitHub</a>
+      </div>
+    </nav>
+
+    <header class="hero">
+      <span class="status"><span aria-hidden="true">●</span> personal project · beta · single user</span>
+      <h1>Ask your own health data real questions.</h1>
+      <p class="lede">Health MCP connects one Google Health account — the data a Fitbit tracker syncs every day — to an AI assistant through the Model Context Protocol. It runs on my machine, reads with my consent, and writes nothing.</p>
+      <div class="actions">
+        <a class="btn primary" href="#quickstart">See the quickstart</a>
+        <a class="btn ghost" href="privacy.html">Privacy policy</a>
+      </div>
+    </header>
+
+    <section id="how">
+      <div class="head">
+        <span class="eyebrow">How it works</span>
+        <h2>Five hops, one owner</h2>
+        <p class="muted">Every hop is the account owner's own account or own hardware. There is no server in the middle belonging to this project — the MCP process runs locally and talks to Google directly.</p>
+      </div>
+      <div class="flow" aria-label="Data path from wrist to assistant">
+        <div class="node"><span class="k">Wrist</span><span class="v">Fitbit Air</span></div>
+        <div class="arr"><span aria-hidden="true">→</span><span class="lbl">syncs</span></div>
+        <div class="node"><span class="k">Phone</span><span class="v">Google Health app</span></div>
+        <div class="arr"><span aria-hidden="true">→</span><span class="lbl">cloud</span></div>
+        <div class="node"><span class="k">Google</span><span class="v">Health API</span></div>
+        <div class="arr"><span aria-hidden="true">→</span><span class="lbl">OAuth, read-only</span></div>
+        <div class="node hot"><span class="k">This project · local</span><span class="v">Health MCP server</span></div>
+        <div class="arr"><span aria-hidden="true">→</span><span class="lbl">MCP tools</span></div>
+        <div class="node"><span class="k">Assistant</span><span class="v">Claude</span></div>
+      </div>
+      <div class="grid-3" style="margin-top: 28px;">
+        <div class="tile">
+          <span class="eyebrow">01 · Local-first</span>
+          <h3>Tokens stay home</h3>
+          <p>OAuth credentials and tokens live in one directory on the owner's computer with owner-only file permissions. The assistant can call tools; it can never see a token or the client secret.</p>
+        </div>
+        <div class="tile">
+          <span class="eyebrow">02 · Read-only</span>
+          <h3>Look, don't touch</h3>
+          <p>Every granted scope ends in <code>.readonly</code>. The server can summarize a month of sleep; it cannot log, edit or delete a single data point in the Google Health account.</p>
+        </div>
+        <div class="tile">
+          <span class="eyebrow">03 · Consent-scoped</span>
+          <h3>Revocable in one click</h3>
+          <p>Access exists only because the owner approved it on Google's consent screen, scope by scope. Removing the app in Google Account settings kills every stored token instantly.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="data">
+      <div class="head">
+        <span class="eyebrow">Data</span>
+        <h2>What it can read</h2>
+        <p class="muted">The Google Health API exposes standardized data types in scope groups; Health MCP requests the read side of each. Names below are the API's own identifiers.</p>
+      </div>
+      <div class="data-grid">
+        <div class="data-card">
+          <h3>Activity &amp; fitness</h3>
+          <div class="types"><span class="t">steps</span><span class="t">distance</span><span class="t">active-zone-minutes</span><span class="t">exercise</span><span class="t">total-calories</span></div>
+          <span class="scope">googlehealth.activity_and_fitness.readonly</span>
+        </div>
+        <div class="data-card">
+          <h3>Heart &amp; vitals</h3>
+          <div class="types"><span class="t">heart-rate</span><span class="t">daily-resting-heart-rate</span><span class="t">daily-heart-rate-variability</span><span class="t">daily-oxygen-saturation</span><span class="t">weight</span></div>
+          <span class="scope">googlehealth.health_metrics_and_measurements.readonly</span>
+        </div>
+        <div class="data-card">
+          <h3>Sleep</h3>
+          <div class="types"><span class="t">sleep</span><span class="t">daily-respiratory-rate</span><span class="t">daily-sleep-temperature-derivations</span></div>
+          <span class="scope">googlehealth.sleep.readonly</span>
+        </div>
+        <div class="data-card">
+          <h3>Nutrition &amp; hydration</h3>
+          <div class="types"><span class="t">nutrition-log</span><span class="t">hydration-log</span></div>
+          <span class="scope">googlehealth.nutrition.readonly</span>
+        </div>
+        <div class="data-card">
+          <h3>Clinical signals</h3>
+          <div class="types"><span class="t">irregular-rhythm-notification</span><span class="t">electrocardiogram</span></div>
+          <span class="scope">googlehealth.irn.readonly · googlehealth.ecg.readonly</span>
+        </div>
+        <div class="data-card">
+          <h3>Profile &amp; settings</h3>
+          <div class="types"><span class="t">units</span><span class="t">time zone</span><span class="t">paired devices</span></div>
+          <span class="scope">googlehealth.profile.readonly · googlehealth.settings.readonly</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="quickstart">
+      <div class="head">
+        <span class="eyebrow">Quickstart</span>
+        <h2>Reproduce it yourself</h2>
+        <p class="muted">Three commands, after creating a Google Cloud OAuth client with the Google Health API enabled and <code>http://127.0.0.1:3000/callback</code> as the redirect URI. Requires Node.js 20+.</p>
+      </div>
+      <div class="term">
+        <div class="term-bar"><span class="dot"></span><span>terminal</span></div>
+        <pre><code><span class="c"># configure: client ID + secret, scopes, MCP client wiring</span>
+<span class="p">$ </span>npx -y google-health-mcp-unofficial setup --client claude --scope-preset full
+
+<span class="c"># authorize: opens Google's consent screen, saves tokens locally</span>
+<span class="p">$ </span>npx -y google-health-mcp-unofficial auth
+
+<span class="c"># verify: proves the Google Health API answers with your token</span>
+<span class="p">$ </span>npx -y google-health-mcp-unofficial doctor --live</code></pre>
+      </div>
+      <div class="note" style="margin-top: 18px;">
+        <p><strong>Under the hood.</strong> Health MCP is my personal deployment and configuration of the open-source <a href="https://github.com/davidmosiah/google-health-mcp" rel="noopener">google-health-mcp-unofficial</a> connector (MIT) against the <a href="https://developers.google.com/health" rel="noopener">Google Health API</a> — the successor to the retired Fitbit Web API. Credit for the connector goes to its authors; the deployment choices, this site, and the privacy stance are mine.</p>
+      </div>
+    </section>
+
+    <section id="about">
+      <div class="head">
+        <span class="eyebrow">Status</span>
+        <h2>One user, on purpose</h2>
+      </div>
+      <p>This is a personal tool, not a service. The only account that can sign in is mine, and the only computer it runs on is mine. If it ever grows into something other people can use, it will go through Google's app verification first — until then, treat everything here as documentation of a working single-user setup.</p>
+      <p style="margin-top: 12px;">Planned next: scheduled weekly summaries, longitudinal charts against training logs, and a small evaluation of how well assistant answers stay grounded in the retrieved numbers.</p>
+    </section>
+
+    <footer>
+      <div class="cols">
+        <a class="brand" href="./" style="font-size: 16px;"><span class="pulse" aria-hidden="true"></span>Health&nbsp;MCP</a>
+        <span class="spacer"></span>
+        <a href="privacy.html">Privacy policy</a>
+        <a href="#" id="gh-link-footer">GitHub</a>
+        <a href="mailto:jacob.zhao24@gmail.com">Contact</a>
+      </div>
+      <p class="fine">© 2026 Jacob (Jiacheng) Zhao. Not affiliated with, endorsed by, or supported by Google, Fitbit, Alphabet, or Anthropic. Not a medical device; nothing here is medical advice.</p>
+    </footer>
+  </div>
+
+  <script>
+    // On GitHub Pages the repo URL can be derived from the hostname.
+    (function () {
+      var host = location.hostname;
+      var repo = "health-mcp";
+      var url = host.endsWith(".github.io")
+        ? "https://github.com/" + host.split(".")[0] + "/" + repo
+        : "https://github.com";
+      var nav = document.getElementById("gh-link-nav");
+      var foot = document.getElementById("gh-link-footer");
+      if (nav) nav.href = url;
+      if (foot) foot.href = url;
+    })();
+  </script>
+</body>
+</html>
