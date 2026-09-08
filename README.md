@@ -1,8 +1,8 @@
 # Health MCP
 
-Project site for **Health MCP** — my personal, single-user setup that connects my Google Health data (synced from a Fitbit Air) to an AI assistant through the [Model Context Protocol](https://modelcontextprotocol.io), local-first and read-only.
+Project site for **Health MCP** — a personal, single-user setup that connects your Google Health data (synced from a Fitbit Air) to an AI assistant through the [Model Context Protocol](https://modelcontextprotocol.io), local-first and read-only.
 
-**Live site:** `https://<username>.github.io/health-mcp/` (GitHub Pages, deployed from the `main` branch root).
+**Live site:** https://jiachengzhao98.github.io/health-mcp/
 
 This repo currently holds the public pages Google Cloud requires for an OAuth app in production — a homepage and a privacy policy — plus room to grow if the project ever becomes a real published app.
 
@@ -26,12 +26,6 @@ npx -y google-health-mcp-unofficial setup --client claude --scope-preset full
 npx -y google-health-mcp-unofficial auth
 npx -y google-health-mcp-unofficial doctor --live
 ```
-
-## Deploy
-
-1. Push to `main`.
-2. Repo **Settings → Pages** → Deploy from a branch → `main` / `/ (root)`.
-3. In Google Cloud → **Google Auth Platform → Branding**: add `<username>.github.io` under Authorized domains, set the homepage and privacy-policy URLs to this site.
 
 ## Roadmap (maybe)
 
