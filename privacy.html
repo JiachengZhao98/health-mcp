@@ -17,6 +17,7 @@
         <a href="./#how">How it works</a>
         <a href="./#data">Data</a>
         <a href="./#quickstart">Quickstart</a>
+        <a href="./#cloud">Cloud Run</a>
         <a href="privacy.html" aria-current="page">Privacy</a>
       </div>
     </nav>
@@ -24,7 +25,7 @@
     <div class="prose">
       <span class="eyebrow">Legal</span>
       <h1 style="font-size: clamp(32px, 5vw, 44px);">Privacy Policy</h1>
-      <p class="updated">Effective September 7, 2026 · applies to the application "Health MCP"</p>
+      <p class="updated">Effective September 9, 2026 · applies to the application "Health MCP"</p>
 
       <h2>1. Who this covers</h2>
       <p>Health MCP is a personal application operated by its developer, Jacob (Jiacheng) Zhao, for the developer's own use. It has exactly one user: the developer. It is not offered to the public, and no other person's Google account can be connected to it. This policy describes how the application handles Google user data so that its use of the Google Health API is transparent.</p>
@@ -44,8 +45,14 @@
       <h2>3. How the data is used</h2>
       <p>Data is retrieved only when the account owner asks a question. It is used solely to answer that question — for example, to summarize sleep over a period, chart heart-rate trends, or compare activity between days. It is not used for advertising, profiling, credit or insurance decisions, model training, or any purpose other than the owner's own analysis.</p>
 
-      <h2>4. Where the data is stored</h2>
-      <p>The application runs on the account owner's personal computer. OAuth access and refresh tokens are stored in a local file readable only by the owner's user account. The application operates no server, database, or cloud storage of its own, and it does not retain copies of health data beyond the duration of a request.</p>
+      <h2>4. Where the application runs and what it stores</h2>
+      <p>The application can be deployed in either of two shapes. Both are operated entirely by the account owner, and which one is in use determines only where the OAuth tokens are kept.</p>
+      <ul>
+        <li><strong>On the account owner's own computer.</strong> The server is a local process. OAuth access and refresh tokens are stored in a local file readable only by the owner's user account.</li>
+        <li><strong>On the account owner's own Google Cloud project.</strong> The server runs as a Cloud Run service in the same project that holds the OAuth client. The client ID and secret are kept in Secret Manager and the OAuth access and refresh tokens in a single Firestore document — both private to that project, readable only by the service's own identity and the project owner.</li>
+      </ul>
+      <p>In neither shape does a server, database, or account belonging to anyone other than the account owner sit in the path, and the Cloud Run option introduces no additional data processor: the hosting project and the health data are held by the same provider the data already comes from. Health data itself is never written to a file or a database in either shape — it is read to answer a question and kept only for the duration of that request.</p>
+      <p>The Cloud Run endpoint has no public sign-in. Every route sits beneath a 256-bit random path segment that functions as the credential for reaching it; the account owner alone holds that URL and can invalidate it at any time by generating a new secret and redeploying.</p>
 
       <h2>5. Sharing</h2>
       <p>Health data is not sold, rented, or shared with third parties for their own purposes. One transfer is inherent in how the application is used: when the owner asks the AI assistant a question, the specific data needed to answer it is included in that request and processed by the assistant's provider (Anthropic) under that provider's terms and privacy policy. No data is transferred to anyone else.</p>
@@ -54,7 +61,7 @@
       <p>Health MCP's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
 
       <h2>7. Revoking access</h2>
-      <p>Access can be revoked at any time from the Google Account's <a href="https://myaccount.google.com/permissions" rel="noopener">Third-party apps &amp; services</a> page, which invalidates the stored tokens immediately. Deleting the local token file has the same effect on the owner's computer.</p>
+      <p>Access can be revoked at any time from the Google Account's <a href="https://myaccount.google.com/permissions" rel="noopener">Third-party apps &amp; services</a> page, which invalidates the stored tokens immediately. The stored copies can also be destroyed directly: deleting the local token file for a local run, or deleting the <code>health_mcp/google_tokens</code> document in Firestore for a Cloud Run deployment. Rotating the secret path and redeploying additionally makes the existing Cloud Run endpoint URL unreachable.</p>
 
       <h2>8. Changes</h2>
       <p>If the way the application handles data changes, this page will be updated and the effective date above revised.</p>
