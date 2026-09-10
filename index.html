@@ -127,7 +127,7 @@
 <span class="p">$ </span>npx -y google-health-mcp-unofficial doctor --live</code></pre>
       </div>
       <div class="note" style="margin-top: 18px;">
-        <p><strong>Under the hood.</strong> Health MCP is my personal deployment and configuration of the open-source <a href="https://github.com/davidmosiah/google-health-mcp" rel="noopener">google-health-mcp-unofficial</a> connector (MIT) against the <a href="https://developers.google.com/health" rel="noopener">Google Health API</a> — the successor to the retired Fitbit Web API. Credit for the connector goes to its authors; the deployment choices, this site, and the privacy stance are mine.</p>
+        <p><strong>Under the hood.</strong> Health MCP is my personal deployment and configuration of the open-source <a href="https://github.com/davidmosiah/google-health-mcp" rel="noopener">google-health-mcp-unofficial</a> connector (MIT) against the <a href="https://developers.google.com/health" rel="noopener">Google Health API</a> — the successor to the retired Fitbit Web API. Credit for the connector goes to its authors.</p>
       </div>
     </section>
 
@@ -175,9 +175,6 @@
 <span class="c"># then paste the /mcp URL into claude.ai as a custom connector</span>
 <span class="p">$ </span>echo "https://$SERVICE_URL/$SECRET/mcp"</code></pre>
       </div>
-      <div class="note" style="margin-top: 18px;">
-        <p><strong>Why not the edge?</strong> The first cloud version ran on a Cloudflare Worker. <code>health_trend_report</code> — every headline metric across up to 366 days in one call — fans out to roughly nine upstream requests, which exceeded both the free plan's 10&nbsp;ms CPU budget and its 50-subrequest cap. Cloud Run has neither ceiling, scales to zero between questions, and sits in the same project as everything else. Source and deploy guide live in <code>cloudrun/</code>.</p>
-      </div>
     </section>
 
     <section id="about">
@@ -197,7 +194,7 @@
         <a href="#" id="gh-link-footer">GitHub</a>
         <a href="mailto:jacob.zhao24@gmail.com">Contact</a>
       </div>
-      <p class="fine">© 2026 Jacob (Jiacheng) Zhao. Not affiliated with, endorsed by, or supported by Google, Fitbit, Alphabet, or Anthropic. Not a medical device; nothing here is medical advice.</p>
+      <p class="fine">© 2026 Jiacheng Zhao. Not affiliated with, endorsed by, or supported by Google, Fitbit, Alphabet, or Anthropic. Not a medical device; nothing here is medical advice.</p>
     </footer>
   </div>
 
