@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Health MCP</title>
-  <meta name="description" content="A local-first MCP server setup that lets an AI assistant read one person's Google Health data — consented, read-only, on their own machine.">
+  <meta name="description" content="An MCP server setup that lets an AI assistant read one person's Google Health data — consented, read-only, running on their own machine or in their own Google Cloud project.">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700&family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="styles.css">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='%230B7D6E'/%3E%3Cpath d='M22 52h14l7-18 12 34 8-22 5 6h10' fill='none' stroke='white' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
@@ -17,6 +17,7 @@
         <a href="#how">How it works</a>
         <a href="#data">Data</a>
         <a href="#quickstart">Quickstart</a>
+        <a href="#cloud">Cloud Run</a>
         <a href="privacy.html">Privacy</a>
         <a href="#" id="gh-link-nav">GitHub</a>
       </div>
@@ -25,7 +26,7 @@
     <header class="hero">
       <span class="status"><span aria-hidden="true">●</span> personal project · beta · single user</span>
       <h1>Ask your own health data real questions.</h1>
-      <p class="lede">Health MCP connects one Google Health account — the data a Fitbit tracker syncs every day — to an AI assistant through the Model Context Protocol. It runs on my machine, reads with my consent, and writes nothing.</p>
+      <p class="lede">Health MCP connects one Google Health account — the data a Fitbit tracker syncs every day — to an AI assistant through the Model Context Protocol. It runs on hardware I control — my laptop, or my own Google Cloud project — reads with my consent, and writes nothing.</p>
       <div class="actions">
         <a class="btn primary" href="#quickstart">See the quickstart</a>
         <a class="btn ghost" href="privacy.html">Privacy policy</a>
@@ -36,7 +37,7 @@
       <div class="head">
         <span class="eyebrow">How it works</span>
         <h2>Five hops, one owner</h2>
-        <p class="muted">Every hop is the account owner's own account or own hardware. There is no server in the middle belonging to this project — the MCP process runs locally and talks to Google directly.</p>
+        <p class="muted">Every hop is the account owner's own account, own hardware, or own cloud project. No third party sits in the middle: the MCP process talks to Google directly, whether it runs on the owner's laptop or on <a href="#cloud">Cloud Run in the owner's project</a>.</p>
       </div>
       <div class="flow" aria-label="Data path from wrist to assistant">
         <div class="node"><span class="k">Wrist</span><span class="v">Fitbit Air</span></div>
@@ -45,15 +46,15 @@
         <div class="arr"><span aria-hidden="true">→</span><span class="lbl">cloud</span></div>
         <div class="node"><span class="k">Google</span><span class="v">Health API</span></div>
         <div class="arr"><span aria-hidden="true">→</span><span class="lbl">OAuth, read-only</span></div>
-        <div class="node hot"><span class="k">This project · local</span><span class="v">Health MCP server</span></div>
+        <div class="node hot"><span class="k">This project · local or cloud</span><span class="v">Health MCP server</span></div>
         <div class="arr"><span aria-hidden="true">→</span><span class="lbl">MCP tools</span></div>
         <div class="node"><span class="k">Assistant</span><span class="v">Claude</span></div>
       </div>
       <div class="grid-3" style="margin-top: 28px;">
         <div class="tile">
-          <span class="eyebrow">01 · Local-first</span>
+          <span class="eyebrow">01 · Owner-held</span>
           <h3>Tokens stay home</h3>
-          <p>OAuth credentials and tokens live in one directory on the owner's computer with owner-only file permissions. The assistant can call tools; it can never see a token or the client secret.</p>
+          <p>OAuth credentials and tokens live either in one owner-only directory on the owner's computer, or in Secret Manager and Firestore inside the owner's own Google Cloud project. The assistant can call tools; it can never see a token or the client secret.</p>
         </div>
         <div class="tile">
           <span class="eyebrow">02 · Read-only</span>
@@ -112,7 +113,7 @@
       <div class="head">
         <span class="eyebrow">Quickstart</span>
         <h2>Reproduce it yourself</h2>
-        <p class="muted">Three commands, after creating a Google Cloud OAuth client with the Google Health API enabled and <code>http://127.0.0.1:3000/callback</code> as the redirect URI. Requires Node.js 20+.</p>
+        <p class="muted">The local path — three commands, after creating a Google Cloud OAuth client with the Google Health API enabled and <code>http://127.0.0.1:3000/callback</code> as the redirect URI. Requires Node.js 20+. To reach the same data from a phone instead, see <a href="#cloud">Cloud Run</a>.</p>
       </div>
       <div class="term">
         <div class="term-bar"><span class="dot"></span><span>terminal</span></div>
@@ -130,12 +131,61 @@
       </div>
     </section>
 
+    <section id="cloud">
+      <div class="head">
+        <span class="eyebrow">Cloud Run</span>
+        <h2>Same server, nothing left switched on</h2>
+        <p class="muted">The local setup only answers while my laptop is awake. A second deployment runs the identical MCP server on Google Cloud Run, inside the same project that already holds the OAuth client and the health data — so a question asked from a phone, mid-run, gets an answer with no computer on anywhere.</p>
+      </div>
+      <div class="flow" aria-label="Data path for the Cloud Run deployment">
+        <div class="node"><span class="k">Phone</span><span class="v">Google Health app</span></div>
+        <div class="arr"><span aria-hidden="true">→</span><span class="lbl">cloud</span></div>
+        <div class="node"><span class="k">Google</span><span class="v">Health API</span></div>
+        <div class="arr"><span aria-hidden="true">→</span><span class="lbl">OAuth, read-only</span></div>
+        <div class="node hot"><span class="k">This project · my GCP</span><span class="v">Cloud Run + Firestore</span></div>
+        <div class="arr"><span aria-hidden="true">→</span><span class="lbl">HTTPS · MCP</span></div>
+        <div class="node"><span class="k">Any device</span><span class="v">claude.ai connector</span></div>
+      </div>
+      <div class="grid-3" style="margin-top: 28px;">
+        <div class="tile">
+          <span class="eyebrow">04 · One boundary</span>
+          <h3>My project, my bill</h3>
+          <p>Cloud Run, Firestore, the OAuth client and the health data all sit in a single Google Cloud project I own — one console, one bill, one place to audit. Still no server belonging to anyone else in the path.</p>
+        </div>
+        <div class="tile">
+          <span class="eyebrow">05 · Secret URL</span>
+          <h3>The path is the password</h3>
+          <p>There is no login on the endpoint: claude.ai speaks plain HTTPS and cannot sign Google IAM requests, so every route sits under a 256-bit random path segment. Whoever holds that URL can read the data, so it is treated as a credential and rotated by redeploying.</p>
+        </div>
+        <div class="tile">
+          <span class="eyebrow">06 · Filtered</span>
+          <h3>Identity and GPS stripped</h3>
+          <p>Every API response passes through a filter that deletes name, email and location keys before the model sees them. Tokens live in Firestore, refresh themselves, and never appear in a response or a log line.</p>
+        </div>
+      </div>
+      <div class="term" style="margin-top: 28px;">
+        <div class="term-bar"><span class="dot"></span><span>terminal</span></div>
+        <pre><code><span class="c"># deploy: Cloud Build reads the Dockerfile — no local Docker needed</span>
+<span class="p">$ </span>cd cloudrun &amp;&amp; gcloud run deploy health-mcp --source . --region us-central1 \
+      --set-secrets=GH_CLIENT_ID=gh-client-id:latest,SECRET_PATH=health-mcp-secret-path:latest
+
+<span class="c"># authorize once in any browser — tokens land in Firestore, then refresh themselves</span>
+<span class="p">$ </span>open "https://$SERVICE_URL/$SECRET/authorize"
+
+<span class="c"># then paste the /mcp URL into claude.ai as a custom connector</span>
+<span class="p">$ </span>echo "https://$SERVICE_URL/$SECRET/mcp"</code></pre>
+      </div>
+      <div class="note" style="margin-top: 18px;">
+        <p><strong>Why not the edge?</strong> The first cloud version ran on a Cloudflare Worker. <code>health_trend_report</code> — every headline metric across up to 366 days in one call — fans out to roughly nine upstream requests, which exceeded both the free plan's 10&nbsp;ms CPU budget and its 50-subrequest cap. Cloud Run has neither ceiling, scales to zero between questions, and sits in the same project as everything else. Source and deploy guide live in <code>cloudrun/</code>.</p>
+      </div>
+    </section>
+
     <section id="about">
       <div class="head">
         <span class="eyebrow">Status</span>
         <h2>One user, on purpose</h2>
       </div>
-      <p>This is a personal tool, not a service. The only account that can sign in is mine, and the only computer it runs on is mine. If it ever grows into something other people can use, it will go through Google's app verification first — until then, treat everything here as documentation of a working single-user setup.</p>
+      <p>This is a personal tool, not a service. The only account that can sign in is mine, and everything it runs on is mine — my laptop, or my own Google Cloud project. If it ever grows into something other people can use, it will go through Google's app verification first — until then, treat everything here as documentation of a working single-user setup.</p>
       <p style="margin-top: 12px;">Planned next: scheduled weekly summaries, longitudinal charts against training logs, and a small evaluation of how well assistant answers stay grounded in the retrieved numbers.</p>
     </section>
 
