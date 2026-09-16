@@ -148,7 +148,7 @@ Leave OAuth fields empty; the secret path is the auth. Enable it in a chat's too
 
 `health_connection_status` · `health_list_data_types` · `health_get_profile` · `health_daily_summary` · **`health_trend_report`** · `health_daily_rollup` · `health_rollup` · `health_list_data_points` · `health_sleep_sessions` · `health_reconcile_data_points`
 
-All read-only. `health_trend_report` is the one to reach for on trend questions — it fans out to every headline metric over a range and chunks around Google's per-type rollup caps (e.g. `total-calories` maxes at 14 days per query). Data types are kebab-case (`steps`, `sleep`, `heart-rate`, `daily-resting-heart-rate`); filters use snake_case members (`heart_rate.sample_time.physical_time`, `sleep.interval.civil_end_time`).
+All read-only. `health_trend_report` is the one to reach for on trend questions — it fans out to every headline metric over a range, up to 47 upstream calls for a full year. Google caps each daily rollup request at 14 days for `total-calories` and `heart-rate` and at 90 days for most other types, so `health_trend_report` and `health_daily_rollup` split long ranges into chunks that fit and follow every page. Data types are kebab-case (`steps`, `sleep`, `heart-rate`, `daily-resting-heart-rate`); filters use snake_case members (`heart_rate.sample_time.physical_time`, `sleep.interval.civil_end_time`).
 
 ## Migrating off the Cloudflare Worker
 
@@ -163,7 +163,7 @@ Re-authorizing is the migration — refresh tokens aren't worth copying between 
 ```bash
 npm install
 npm run check                # typecheck
-npm test                     # 15 end-to-end tests against a real HTTP server
+npm test                     # 36 tests: the real HTTP server end to end, plus the Google calls against a stubbed fetch
 npm run build && GH_CLIENT_ID=x GH_CLIENT_SECRET=y SECRET_PATH=dev \
   HEALTH_MCP_STORE=memory npm start        # in-memory store, no Firestore needed
 ```

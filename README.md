@@ -14,7 +14,7 @@ This repo holds two things: the public pages Google Cloud requires for an OAuth 
 | `privacy.html` | Privacy policy (linked on the Google OAuth consent screen) |
 | `styles.css` | Shared stylesheet, light + dark themes, no build step |
 | `.nojekyll` | Tells GitHub Pages to serve files as-is |
-| `cloudrun/` | The Cloud Run MCP server — TypeScript source, Dockerfile, 22 tests, and its own [deploy guide](cloudrun/README.md) |
+| `cloudrun/` | The Cloud Run MCP server — TypeScript source, Dockerfile, 36 tests, and its own [deploy guide](cloudrun/README.md) |
 
 The site has no framework and no build step — edit the HTML/CSS and push. `cloudrun/` is an ordinary TypeScript project with one runtime dependency.
 
