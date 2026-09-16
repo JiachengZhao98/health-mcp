@@ -240,19 +240,29 @@ async function requestTokens(env: Env, params: Record<string, string>): Promise<
   };
 }
 
-async function refreshTokens(env: Env, store: Store, current: StoredTokens): Promise<StoredTokens> {
-  if (!current.refresh_token) throw new Error("No refresh token stored. Re-open your /authorize URL.");
-  const fresh = await requestTokens(env, { grant_type: "refresh_token", refresh_token: current.refresh_token });
-  const merged: StoredTokens = { ...current, ...fresh, refresh_token: fresh.refresh_token ?? current.refresh_token };
-  await store.writeTokens(merged);
-  return merged;
+const NOT_AUTHORIZED = "Not authorized yet. Open your saved /authorize URL once in a browser, approve, then retry.";
+
+// Callers on the same instance that need a refresh at the same moment share one
+// request to Google instead of each spending the refresh token.
+const inflightRefresh = new WeakMap<Store, Promise<StoredTokens>>();
+
+function refreshTokens(env: Env, store: Store, current: StoredTokens): Promise<StoredTokens> {
+  const pending = inflightRefresh.get(store);
+  if (pending) return pending;
+  const refresh = (async () => {
+    if (!current.refresh_token) throw new Error("No refresh token stored. Re-open your /authorize URL.");
+    const fresh = await requestTokens(env, { grant_type: "refresh_token", refresh_token: current.refresh_token });
+    const merged: StoredTokens = { ...current, ...fresh, refresh_token: fresh.refresh_token ?? current.refresh_token };
+    await store.writeTokens(merged);
+    return merged;
+  })().finally(() => inflightRefresh.delete(store));
+  inflightRefresh.set(store, refresh);
+  return refresh;
 }
 
 async function getAccessToken(env: Env, store: Store): Promise<string> {
   const tokens = await store.readTokens();
-  if (!tokens?.access_token) {
-    throw new Error("Not authorized yet. Open your saved /authorize URL once in a browser, approve, then retry.");
-  }
+  if (!tokens?.access_token) throw new Error(NOT_AUTHORIZED);
   const now = Math.floor(Date.now() / 1000);
   if (tokens.refresh_token && tokens.expires_at && tokens.expires_at - now < 120) {
     return (await refreshTokens(env, store, tokens)).access_token;
@@ -263,6 +273,34 @@ async function getAccessToken(env: Env, store: Store): Promise<string> {
 interface Ctx {
   env: Env;
   store: Store;
+  /** The access token for this HTTP request: looked up once, shared by every upstream call. */
+  token?: Promise<string>;
+  /** The renewal after Google answered 401, shared by every call that saw the 401. */
+  renewal?: Promise<string>;
+}
+
+function accessToken(ctx: Ctx): Promise<string> {
+  if (!ctx.token) {
+    const lookup = getAccessToken(ctx.env, ctx.store);
+    ctx.token = lookup;
+    // Don't cache a failure: a later call in the same request looks again.
+    lookup.catch(() => {
+      if (ctx.token === lookup) ctx.token = undefined;
+    });
+  }
+  return ctx.token;
+}
+
+function renewAfter401(ctx: Ctx): Promise<string> {
+  if (!ctx.renewal) {
+    ctx.renewal = (async () => {
+      const tokens = await ctx.store.readTokens();
+      if (!tokens?.access_token) throw new Error(NOT_AUTHORIZED);
+      return (await refreshTokens(ctx.env, ctx.store, tokens)).access_token;
+    })();
+    ctx.token = ctx.renewal;
+  }
+  return ctx.renewal;
 }
 
 async function apiRequest(
@@ -287,11 +325,8 @@ async function apiRequest(
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     });
 
-  let res = await doFetch(await getAccessToken(ctx.env, ctx.store));
-  if (res.status === 401) {
-    const tokens = await ctx.store.readTokens();
-    if (tokens) res = await doFetch((await refreshTokens(ctx.env, ctx.store, tokens)).access_token);
-  }
+  let res = await doFetch(await accessToken(ctx));
+  if (res.status === 401) res = await doFetch(await renewAfter401(ctx));
   const text = await res.text();
   let data: unknown;
   try {
