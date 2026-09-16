@@ -721,14 +721,15 @@ export const TOOLS: Array<{ name: string; description: string; inputSchema: unkn
   },
   {
     name: "health_reconcile_data_points",
-    description: "Changed data points since a previous sync cursor — incremental sync without re-reading history.",
+    description:
+      "Data points of one type merged across sources into a single deduplicated stream (overlapping records from several devices or syncs resolved into one). Accepts the same filter syntax as health_list_data_points.",
     inputSchema: {
       type: "object",
       properties: {
         data_type: str("Kebab-case data type"),
         filter: str("Optional filter expression"),
         page_size: num("Max points per page"),
-        page_token: str("Reconcile cursor from a previous call"),
+        page_token: str("Token from a previous page"),
         source_family: sourceFamilyProp,
       },
       required: ["data_type"],
