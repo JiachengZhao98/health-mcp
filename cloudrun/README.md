@@ -163,7 +163,7 @@ Re-authorizing is the migration — refresh tokens aren't worth copying between 
 ```bash
 npm install
 npm run check                # typecheck
-npm test                     # 36 tests: the real HTTP server end to end, plus the Google calls against a stubbed fetch
+npm test                     # 37 tests: the real HTTP server end to end, plus the Google calls against a stubbed fetch
 npm run build && GH_CLIENT_ID=x GH_CLIENT_SECRET=y SECRET_PATH=dev \
   HEALTH_MCP_STORE=memory npm start        # in-memory store, no Firestore needed
 ```

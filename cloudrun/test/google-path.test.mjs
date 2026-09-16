@@ -308,10 +308,23 @@ test("the filter strips identity, credential and location keys in any casing", (
 test("every Google response passes through the filter before reaching the model", async () => {
   await authorize();
   reset(() =>
-    Response.json({ dataTypes: [{ name: "steps" }], email: "me@example.com", nested: { geoLocation: { lat: 1 }, firstName: "J" } }),
+    Response.json({ dataPoints: [{ steps: { count: "12" } }], email: "me@example.com", nested: { geoLocation: { lat: 1 }, firstName: "J" } }),
   );
-  const { payload } = await callTool("health_list_data_types", {});
-  assert.deepEqual(payload, { dataTypes: [{ name: "steps" }], nested: {} });
+  const { payload } = await callTool("health_list_data_points", { data_type: "steps" });
+  assert.deepEqual(payload, { dataPoints: [{ steps: { count: "12" } }], nested: {} });
+});
+
+test("health_list_data_types answers from the local catalog without calling Google", async () => {
+  reset();
+  const { result, payload } = await callTool("health_list_data_types", {});
+  assert.ok(!result.isError);
+  assert.equal(google.calls.length, 0);
+  const names = Object.values(payload.data_types).flat();
+  assert.equal(new Set(names).size, names.length, "no duplicates");
+  for (const t of ["steps", "total-calories", "daily-resting-heart-rate", "sleep", "weight", "electrocardiogram"]) {
+    assert.ok(names.includes(t), t);
+  }
+  assert.ok(!names.includes("symptoms"), "write-only types are not listed");
 });
 
 // ---- JSON-RPC messages -------------------------------------------------------------------

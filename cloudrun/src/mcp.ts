@@ -581,6 +581,36 @@ async function opConnectionStatus(ctx: Ctx) {
   };
 }
 
+// The Google Health API has no endpoint that lists data types (GET
+// /v4/users/me/dataTypes answers 404), so the readable types are listed here from
+// the published reference: https://developers.google.com/health/data-types
+// Write-only types (menstrual-period, moods, ovulation-test, symptoms) are left out.
+const DATA_TYPE_CATALOG = {
+  activity: [
+    "steps", "distance", "floors", "altitude", "active-minutes", "active-zone-minutes",
+    "active-energy-burned", "total-calories", "calories-in-heart-rate-zone", "time-in-heart-rate-zone",
+    "activity-level", "sedentary-period", "exercise", "swim-lengths-data", "vo2-max", "daily-vo2-max",
+    "run-vo2-max",
+  ],
+  heart_and_vitals: [
+    "heart-rate", "daily-resting-heart-rate", "heart-rate-variability", "daily-heart-rate-variability",
+    "daily-heart-rate-zones", "oxygen-saturation", "daily-oxygen-saturation", "daily-respiratory-rate",
+    "respiratory-rate-sleep-summary", "core-body-temperature", "daily-sleep-temperature-derivations",
+    "blood-glucose",
+  ],
+  body: ["weight", "body-fat", "height"],
+  sleep: ["sleep"],
+  nutrition: ["nutrition-log", "hydration-log", "food", "food-measurement-unit"],
+  clinical: ["electrocardiogram", "irregular-rhythm-notification"],
+};
+
+const DATA_TYPE_NOTES = [
+  "total-calories and calories-in-heart-rate-zone are aggregates only: read them with health_daily_rollup or health_rollup.",
+  "daily-* types hold one value per day: read them with health_list_data_points and a <type>.date filter, e.g. daily_resting_heart_rate.date >= \"2026-09-01\".",
+  "Filters name the type in snake_case (heart_rate.sample_time.physical_time); tool arguments use kebab-case (heart-rate).",
+  "A type with no data for this account returns an empty list, not an error.",
+];
+
 // ---------------------------------------------------------------------------
 // Tool catalog
 // ---------------------------------------------------------------------------
@@ -605,9 +635,14 @@ export const TOOLS: Array<{ name: string; description: string; inputSchema: unkn
   },
   {
     name: "health_list_data_types",
-    description: "List every Google Health data type available to this account (names, units, structure).",
+    description:
+      "List the Google Health data type names this server can read, grouped by category, with notes on which tool reads each. Use it to find the exact kebab-case name before calling another tool.",
     inputSchema: { type: "object", properties: {} },
-    handler: (ctx) => apiRequest(ctx, "GET", "/v4/users/me/dataTypes", { params: { pageSize: 200 } }),
+    handler: async () => ({
+      source: "Google Health API reference (the API has no list endpoint)",
+      data_types: DATA_TYPE_CATALOG,
+      notes: DATA_TYPE_NOTES,
+    }),
   },
   {
     name: "health_get_profile",
