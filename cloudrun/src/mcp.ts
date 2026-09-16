@@ -44,12 +44,24 @@ const SERVER_INFO = { name: "health-mcp", version: "2.0.0" };
 const SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const SOURCE_FAMILIES = ["all-sources", "google-wearables", "google-sources"] as const;
 
-// Google validates window_size_days * page_size <= maxDurationDays for some types.
-const DAILY_ROLLUP_MAX_DURATION_DAYS: Record<string, number> = {
-  "nutrition-log": 90,
+// Google caps the civil range of a single dailyRollUp request by data type: 14 days
+// for the four types below and 90 days for every other type (REST reference,
+// users.dataTypes.dataPoints/dailyRollUp, `range`). Longer ranges are split into
+// consecutive chunks, and window_size_days * page_size is kept within the same cap.
+const DAILY_ROLLUP_RANGE_CAP_DAYS: Record<string, number> = {
   "total-calories": 14,
+  "heart-rate": 14,
+  "active-minutes": 14,
+  "calories-in-heart-rate-zone": 14,
 };
+const DEFAULT_DAILY_ROLLUP_RANGE_CAP_DAYS = 90;
 const DEFAULT_DAILY_ROLLUP_PAGE_SIZE = 90;
+// Bounds how many nextPageToken hops one chunk may take, so a bad cursor can't loop.
+const MAX_ROLLUP_PAGES_PER_CHUNK = 10;
+
+export function dailyRollupCapDays(dataType: string): number {
+  return DAILY_ROLLUP_RANGE_CAP_DAYS[dataType] ?? DEFAULT_DAILY_ROLLUP_RANGE_CAP_DAYS;
+}
 
 // ---------------------------------------------------------------------------
 // Privacy filter (structured mode)
@@ -150,6 +162,21 @@ function daysBetween(start: string, endExclusive: string): number {
   const a = Date.parse(`${normalizeDate(start)}T00:00:00Z`);
   const b = Date.parse(`${normalizeDate(endExclusive)}T00:00:00Z`);
   return Math.round((b - a) / 86_400_000);
+}
+
+/**
+ * Split the civil range [start, endExclusive) into consecutive, non-overlapping
+ * chunks of at most `maxDays` days; the last chunk may be shorter.
+ */
+export function chunkCivilRange(start: string, endExclusive: string, maxDays: number): Array<[string, string]> {
+  const span = daysBetween(start, endExclusive);
+  if (span <= 0) throw new Error("start_date must be earlier than end_date (end is exclusive)");
+  const step = Math.max(1, Math.trunc(maxDays));
+  const chunks: Array<[string, string]> = [];
+  for (let offset = 0; offset < span; offset += step) {
+    chunks.push([shiftDate(start, offset), shiftDate(start, Math.min(offset + step, span))]);
+  }
+  return chunks;
 }
 
 function civilDateTime(date: string) {
@@ -313,24 +340,94 @@ async function opReconcile(ctx: Ctx, a: Record<string, unknown>) {
   });
 }
 
+function parseWindowSizeDays(value: unknown): number {
+  if (value === undefined || value === null || value === "") return 1;
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n) || n < 1) throw new Error("window_size_days must be a whole number of days, at least 1");
+  return n;
+}
+
+interface RollupPage {
+  rollupDataPoints?: unknown;
+  nextPageToken?: unknown;
+}
+
+function dailyRollupPage(
+  ctx: Ctx,
+  dataType: string,
+  range: [string, string],
+  windowSizeDays: number,
+  pageSize: number,
+  pageToken: string | undefined,
+  sourceFamily: string | undefined,
+): Promise<RollupPage> {
+  return apiRequest(ctx, "POST", `/v4/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints:dailyRollUp`, {
+    body: {
+      range: civilRange(range[0], range[1]),
+      windowSizeDays,
+      pageSize,
+      pageToken,
+      dataSourceFamily: sourceFamilyPath(sourceFamily),
+    },
+  }) as Promise<RollupPage>;
+}
+
+function civilDayKey(point: unknown): number | null {
+  const date = (point as { civilStartTime?: { date?: { year?: unknown; month?: unknown; day?: unknown } } })
+    ?.civilStartTime?.date;
+  if (!date || typeof date.year !== "number") return null;
+  return date.year * 10_000 + Number(date.month ?? 0) * 100 + Number(date.day ?? 0);
+}
+
+/** Chunks come back oldest range first; present one newest-first series, as Google orders a single page. */
+function newestFirst(chunks: unknown[][]): unknown[] {
+  const all = chunks.flat();
+  const keys = all.map(civilDayKey);
+  if (keys.some((k) => k === null)) return chunks.slice().reverse().flat();
+  return all
+    .map((point, i) => ({ point, i, key: keys[i] as number }))
+    .sort((x, y) => y.key - x.key || x.i - y.i)
+    .map((e) => e.point);
+}
+
 async function opDailyRollup(ctx: Ctx, a: Record<string, unknown>) {
   const dataType = String(a.data_type ?? "").trim();
   if (!dataType) throw new Error("data_type is required");
-  const startDate = String(a.start_date ?? "");
-  const endDate = a.end_date ? String(a.end_date) : nextDate(startDate);
-  const windowSizeDays = Math.max(1, Math.trunc(Number(a.window_size_days ?? 1)));
-  const cap = DAILY_ROLLUP_MAX_DURATION_DAYS[dataType];
-  let pageSize = clampPageSize(a.page_size, DEFAULT_DAILY_ROLLUP_PAGE_SIZE);
-  if (cap) pageSize = Math.min(pageSize, Math.max(1, Math.floor(cap / windowSizeDays)));
-  return apiRequest(ctx, "POST", `/v4/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints:dailyRollUp`, {
-    body: {
-      range: civilRange(startDate, endDate),
-      windowSizeDays,
-      pageSize,
-      pageToken: a.page_token,
-      dataSourceFamily: sourceFamilyPath(a.source_family as string | undefined),
-    },
-  });
+  const startDate = normalizeDate(String(a.start_date ?? ""));
+  const endDate = a.end_date ? normalizeDate(String(a.end_date)) : nextDate(startDate);
+  const windowSizeDays = parseWindowSizeDays(a.window_size_days);
+  const cap = dailyRollupCapDays(dataType);
+  if (windowSizeDays > cap) {
+    throw new Error(`window_size_days can be at most ${cap} for ${dataType}; Google limits one request to ${cap} days.`);
+  }
+  const pageSize = Math.min(clampPageSize(a.page_size, DEFAULT_DAILY_ROLLUP_PAGE_SIZE), Math.floor(cap / windowSizeDays));
+  const sourceFamily = a.source_family as string | undefined;
+
+  // An explicit page_token means the caller is paging by hand: return exactly that page.
+  if (typeof a.page_token === "string" && a.page_token) {
+    return dailyRollupPage(ctx, dataType, [startDate, endDate], windowSizeDays, pageSize, a.page_token, sourceFamily);
+  }
+
+  // Otherwise split the range to fit the cap (in whole windows) and follow every page.
+  const chunks = chunkCivilRange(startDate, endDate, Math.floor(cap / windowSizeDays) * windowSizeDays);
+  let truncated = false;
+  const perChunk = await Promise.all(
+    chunks.map(async (range) => {
+      const points: unknown[] = [];
+      let pageToken: string | undefined;
+      for (let page = 0; page < MAX_ROLLUP_PAGES_PER_CHUNK; page++) {
+        const res = await dailyRollupPage(ctx, dataType, range, windowSizeDays, pageSize, pageToken, sourceFamily);
+        if (Array.isArray(res.rollupDataPoints)) points.push(...res.rollupDataPoints);
+        pageToken = typeof res.nextPageToken === "string" && res.nextPageToken ? res.nextPageToken : undefined;
+        if (!pageToken) return points;
+      }
+      truncated = true;
+      return points;
+    }),
+  );
+  return truncated
+    ? { rollupDataPoints: newestFirst(perChunk), truncated: true }
+    : { rollupDataPoints: newestFirst(perChunk) };
 }
 
 async function opRollup(ctx: Ctx, a: Record<string, unknown>) {
@@ -402,8 +499,9 @@ async function opDailySummary(ctx: Ctx, a: Record<string, unknown>) {
 
 /**
  * Multi-week trend pull. This is the tool the Cloudflare free plan could not
- * host: it fans out to ~9 upstream calls and walks a range of arbitrary length,
- * which exceeded both the 10 ms CPU budget and the 50-subrequest cap there.
+ * host: it fans out to 9 upstream calls for a short range and up to 47 for a
+ * year (each rollup split to fit Google's per-type range cap), which exceeded
+ * both the 10 ms CPU budget and the 50-subrequest cap there.
  */
 async function opTrendReport(ctx: Ctx, a: Record<string, unknown>) {
   const start = normalizeDate(String(a.start_date ?? ""));
@@ -417,21 +515,10 @@ async function opTrendReport(ctx: Ctx, a: Record<string, unknown>) {
   const samples = requested ? DAILY_SAMPLE_TYPES.filter((m) => requested.includes(m)) : DAILY_SAMPLE_TYPES;
   const wantSleep = !requested || requested.includes("sleep");
 
-  // total-calories caps at window_size_days * page_size <= 14, so long ranges
-  // are walked in chunks rather than failing with INVALID_ROLLUP_QUERY_DURATION.
-  const rollupTasks = rollups.map((type) => {
-    const cap = DAILY_ROLLUP_MAX_DURATION_DAYS[type];
-    if (!cap || span <= cap) {
-      return settle(snakeType(type), opDailyRollup(ctx, { data_type: type, start_date: start, end_date: end }));
-    }
-    const chunks: Array<Promise<unknown>> = [];
-    for (let offset = 0; offset < span; offset += cap) {
-      const chunkStart = shiftDate(start, offset);
-      const chunkEnd = shiftDate(start, Math.min(offset + cap, span));
-      chunks.push(opDailyRollup(ctx, { data_type: type, start_date: chunkStart, end_date: chunkEnd }));
-    }
-    return settle(snakeType(type), Promise.all(chunks).then((parts) => ({ chunked: true, parts })));
-  });
+  // Each rollup is split to fit its type's range cap (14 or 90 days) inside opDailyRollup.
+  const rollupTasks = rollups.map((type) =>
+    settle(snakeType(type), opDailyRollup(ctx, { data_type: type, start_date: start, end_date: end })),
+  );
 
   const entries = await Promise.all([
     ...rollupTasks,
@@ -531,7 +618,7 @@ export const TOOLS: Array<{ name: string; description: string; inputSchema: unkn
   {
     name: "health_daily_rollup",
     description:
-      "Per-day aggregates of one data type over a date range — steps/day, calories/day, weight over time. end_date is exclusive.",
+      "Per-day aggregates of one data type over a date range — steps/day, calories/day, weight over time. end_date is exclusive. Long ranges are split to fit Google's per-type limit (14 days for total-calories and heart-rate, 90 for most types) and every page is returned in one list.",
     inputSchema: {
       type: "object",
       properties: {
@@ -539,8 +626,8 @@ export const TOOLS: Array<{ name: string; description: string; inputSchema: unkn
         start_date: str("YYYY-MM-DD inclusive"),
         end_date: str("YYYY-MM-DD exclusive (default: start_date + 1)"),
         window_size_days: num("Aggregate window in days (default 1)"),
-        page_size: num("Max windows per page"),
-        page_token: str("Token from a previous page"),
+        page_size: num("Max windows per upstream page (all pages are fetched)"),
+        page_token: str("Only to page by hand: returns that single page"),
         source_family: sourceFamilyProp,
       },
       required: ["data_type", "start_date"],
