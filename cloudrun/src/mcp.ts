@@ -40,16 +40,28 @@ const SCOPES = [
   "https://www.googleapis.com/auth/googlehealth.irn.readonly",
 ];
 
-const SERVER_INFO = { name: "health-mcp", version: "2.0.0" };
+const SERVER_INFO = { name: "health-mcp", version: "2.1.0" };
 const SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const SOURCE_FAMILIES = ["all-sources", "google-wearables", "google-sources"] as const;
 
-// Google validates window_size_days * page_size <= maxDurationDays for some types.
-const DAILY_ROLLUP_MAX_DURATION_DAYS: Record<string, number> = {
-  "nutrition-log": 90,
+// Google caps the civil range of a single dailyRollUp request by data type: 14 days
+// for the four types below and 90 days for every other type (REST reference,
+// users.dataTypes.dataPoints/dailyRollUp, `range`). Longer ranges are split into
+// consecutive chunks, and window_size_days * page_size is kept within the same cap.
+const DAILY_ROLLUP_RANGE_CAP_DAYS: Record<string, number> = {
   "total-calories": 14,
+  "heart-rate": 14,
+  "active-minutes": 14,
+  "calories-in-heart-rate-zone": 14,
 };
+const DEFAULT_DAILY_ROLLUP_RANGE_CAP_DAYS = 90;
 const DEFAULT_DAILY_ROLLUP_PAGE_SIZE = 90;
+// Bounds how many nextPageToken hops one chunk may take, so a bad cursor can't loop.
+const MAX_ROLLUP_PAGES_PER_CHUNK = 10;
+
+export function dailyRollupCapDays(dataType: string): number {
+  return DAILY_ROLLUP_RANGE_CAP_DAYS[dataType] ?? DEFAULT_DAILY_ROLLUP_RANGE_CAP_DAYS;
+}
 
 // ---------------------------------------------------------------------------
 // Privacy filter (structured mode)
@@ -152,6 +164,21 @@ function daysBetween(start: string, endExclusive: string): number {
   return Math.round((b - a) / 86_400_000);
 }
 
+/**
+ * Split the civil range [start, endExclusive) into consecutive, non-overlapping
+ * chunks of at most `maxDays` days; the last chunk may be shorter.
+ */
+export function chunkCivilRange(start: string, endExclusive: string, maxDays: number): Array<[string, string]> {
+  const span = daysBetween(start, endExclusive);
+  if (span <= 0) throw new Error("start_date must be earlier than end_date (end is exclusive)");
+  const step = Math.max(1, Math.trunc(maxDays));
+  const chunks: Array<[string, string]> = [];
+  for (let offset = 0; offset < span; offset += step) {
+    chunks.push([shiftDate(start, offset), shiftDate(start, Math.min(offset + step, span))]);
+  }
+  return chunks;
+}
+
 function civilDateTime(date: string) {
   const [year, month, day] = normalizeDate(date).split("-").map(Number);
   return { date: { year, month, day }, time: { hours: 0, minutes: 0, seconds: 0, nanos: 0 } };
@@ -213,19 +240,29 @@ async function requestTokens(env: Env, params: Record<string, string>): Promise<
   };
 }
 
-async function refreshTokens(env: Env, store: Store, current: StoredTokens): Promise<StoredTokens> {
-  if (!current.refresh_token) throw new Error("No refresh token stored. Re-open your /authorize URL.");
-  const fresh = await requestTokens(env, { grant_type: "refresh_token", refresh_token: current.refresh_token });
-  const merged: StoredTokens = { ...current, ...fresh, refresh_token: fresh.refresh_token ?? current.refresh_token };
-  await store.writeTokens(merged);
-  return merged;
+const NOT_AUTHORIZED = "Not authorized yet. Open your saved /authorize URL once in a browser, approve, then retry.";
+
+// Callers on the same instance that need a refresh at the same moment share one
+// request to Google instead of each spending the refresh token.
+const inflightRefresh = new WeakMap<Store, Promise<StoredTokens>>();
+
+function refreshTokens(env: Env, store: Store, current: StoredTokens): Promise<StoredTokens> {
+  const pending = inflightRefresh.get(store);
+  if (pending) return pending;
+  const refresh = (async () => {
+    if (!current.refresh_token) throw new Error("No refresh token stored. Re-open your /authorize URL.");
+    const fresh = await requestTokens(env, { grant_type: "refresh_token", refresh_token: current.refresh_token });
+    const merged: StoredTokens = { ...current, ...fresh, refresh_token: fresh.refresh_token ?? current.refresh_token };
+    await store.writeTokens(merged);
+    return merged;
+  })().finally(() => inflightRefresh.delete(store));
+  inflightRefresh.set(store, refresh);
+  return refresh;
 }
 
 async function getAccessToken(env: Env, store: Store): Promise<string> {
   const tokens = await store.readTokens();
-  if (!tokens?.access_token) {
-    throw new Error("Not authorized yet. Open your saved /authorize URL once in a browser, approve, then retry.");
-  }
+  if (!tokens?.access_token) throw new Error(NOT_AUTHORIZED);
   const now = Math.floor(Date.now() / 1000);
   if (tokens.refresh_token && tokens.expires_at && tokens.expires_at - now < 120) {
     return (await refreshTokens(env, store, tokens)).access_token;
@@ -236,6 +273,34 @@ async function getAccessToken(env: Env, store: Store): Promise<string> {
 interface Ctx {
   env: Env;
   store: Store;
+  /** The access token for this HTTP request: looked up once, shared by every upstream call. */
+  token?: Promise<string>;
+  /** The renewal after Google answered 401, shared by every call that saw the 401. */
+  renewal?: Promise<string>;
+}
+
+function accessToken(ctx: Ctx): Promise<string> {
+  if (!ctx.token) {
+    const lookup = getAccessToken(ctx.env, ctx.store);
+    ctx.token = lookup;
+    // Don't cache a failure: a later call in the same request looks again.
+    lookup.catch(() => {
+      if (ctx.token === lookup) ctx.token = undefined;
+    });
+  }
+  return ctx.token;
+}
+
+function renewAfter401(ctx: Ctx): Promise<string> {
+  if (!ctx.renewal) {
+    ctx.renewal = (async () => {
+      const tokens = await ctx.store.readTokens();
+      if (!tokens?.access_token) throw new Error(NOT_AUTHORIZED);
+      return (await refreshTokens(ctx.env, ctx.store, tokens)).access_token;
+    })();
+    ctx.token = ctx.renewal;
+  }
+  return ctx.renewal;
 }
 
 async function apiRequest(
@@ -260,11 +325,8 @@ async function apiRequest(
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     });
 
-  let res = await doFetch(await getAccessToken(ctx.env, ctx.store));
-  if (res.status === 401) {
-    const tokens = await ctx.store.readTokens();
-    if (tokens) res = await doFetch((await refreshTokens(ctx.env, ctx.store, tokens)).access_token);
-  }
+  let res = await doFetch(await accessToken(ctx));
+  if (res.status === 401) res = await doFetch(await renewAfter401(ctx));
   const text = await res.text();
   let data: unknown;
   try {
@@ -313,24 +375,94 @@ async function opReconcile(ctx: Ctx, a: Record<string, unknown>) {
   });
 }
 
+function parseWindowSizeDays(value: unknown): number {
+  if (value === undefined || value === null || value === "") return 1;
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n) || n < 1) throw new Error("window_size_days must be a whole number of days, at least 1");
+  return n;
+}
+
+interface RollupPage {
+  rollupDataPoints?: unknown;
+  nextPageToken?: unknown;
+}
+
+function dailyRollupPage(
+  ctx: Ctx,
+  dataType: string,
+  range: [string, string],
+  windowSizeDays: number,
+  pageSize: number,
+  pageToken: string | undefined,
+  sourceFamily: string | undefined,
+): Promise<RollupPage> {
+  return apiRequest(ctx, "POST", `/v4/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints:dailyRollUp`, {
+    body: {
+      range: civilRange(range[0], range[1]),
+      windowSizeDays,
+      pageSize,
+      pageToken,
+      dataSourceFamily: sourceFamilyPath(sourceFamily),
+    },
+  }) as Promise<RollupPage>;
+}
+
+function civilDayKey(point: unknown): number | null {
+  const date = (point as { civilStartTime?: { date?: { year?: unknown; month?: unknown; day?: unknown } } })
+    ?.civilStartTime?.date;
+  if (!date || typeof date.year !== "number") return null;
+  return date.year * 10_000 + Number(date.month ?? 0) * 100 + Number(date.day ?? 0);
+}
+
+/** Chunks come back oldest range first; present one newest-first series, as Google orders a single page. */
+function newestFirst(chunks: unknown[][]): unknown[] {
+  const all = chunks.flat();
+  const keys = all.map(civilDayKey);
+  if (keys.some((k) => k === null)) return chunks.slice().reverse().flat();
+  return all
+    .map((point, i) => ({ point, i, key: keys[i] as number }))
+    .sort((x, y) => y.key - x.key || x.i - y.i)
+    .map((e) => e.point);
+}
+
 async function opDailyRollup(ctx: Ctx, a: Record<string, unknown>) {
   const dataType = String(a.data_type ?? "").trim();
   if (!dataType) throw new Error("data_type is required");
-  const startDate = String(a.start_date ?? "");
-  const endDate = a.end_date ? String(a.end_date) : nextDate(startDate);
-  const windowSizeDays = Math.max(1, Math.trunc(Number(a.window_size_days ?? 1)));
-  const cap = DAILY_ROLLUP_MAX_DURATION_DAYS[dataType];
-  let pageSize = clampPageSize(a.page_size, DEFAULT_DAILY_ROLLUP_PAGE_SIZE);
-  if (cap) pageSize = Math.min(pageSize, Math.max(1, Math.floor(cap / windowSizeDays)));
-  return apiRequest(ctx, "POST", `/v4/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints:dailyRollUp`, {
-    body: {
-      range: civilRange(startDate, endDate),
-      windowSizeDays,
-      pageSize,
-      pageToken: a.page_token,
-      dataSourceFamily: sourceFamilyPath(a.source_family as string | undefined),
-    },
-  });
+  const startDate = normalizeDate(String(a.start_date ?? ""));
+  const endDate = a.end_date ? normalizeDate(String(a.end_date)) : nextDate(startDate);
+  const windowSizeDays = parseWindowSizeDays(a.window_size_days);
+  const cap = dailyRollupCapDays(dataType);
+  if (windowSizeDays > cap) {
+    throw new Error(`window_size_days can be at most ${cap} for ${dataType}; Google limits one request to ${cap} days.`);
+  }
+  const pageSize = Math.min(clampPageSize(a.page_size, DEFAULT_DAILY_ROLLUP_PAGE_SIZE), Math.floor(cap / windowSizeDays));
+  const sourceFamily = a.source_family as string | undefined;
+
+  // An explicit page_token means the caller is paging by hand: return exactly that page.
+  if (typeof a.page_token === "string" && a.page_token) {
+    return dailyRollupPage(ctx, dataType, [startDate, endDate], windowSizeDays, pageSize, a.page_token, sourceFamily);
+  }
+
+  // Otherwise split the range to fit the cap (in whole windows) and follow every page.
+  const chunks = chunkCivilRange(startDate, endDate, Math.floor(cap / windowSizeDays) * windowSizeDays);
+  let truncated = false;
+  const perChunk = await Promise.all(
+    chunks.map(async (range) => {
+      const points: unknown[] = [];
+      let pageToken: string | undefined;
+      for (let page = 0; page < MAX_ROLLUP_PAGES_PER_CHUNK; page++) {
+        const res = await dailyRollupPage(ctx, dataType, range, windowSizeDays, pageSize, pageToken, sourceFamily);
+        if (Array.isArray(res.rollupDataPoints)) points.push(...res.rollupDataPoints);
+        pageToken = typeof res.nextPageToken === "string" && res.nextPageToken ? res.nextPageToken : undefined;
+        if (!pageToken) return points;
+      }
+      truncated = true;
+      return points;
+    }),
+  );
+  return truncated
+    ? { rollupDataPoints: newestFirst(perChunk), truncated: true }
+    : { rollupDataPoints: newestFirst(perChunk) };
 }
 
 async function opRollup(ctx: Ctx, a: Record<string, unknown>) {
@@ -402,8 +534,9 @@ async function opDailySummary(ctx: Ctx, a: Record<string, unknown>) {
 
 /**
  * Multi-week trend pull. This is the tool the Cloudflare free plan could not
- * host: it fans out to ~9 upstream calls and walks a range of arbitrary length,
- * which exceeded both the 10 ms CPU budget and the 50-subrequest cap there.
+ * host: it fans out to 9 upstream calls for a short range and up to 47 for a
+ * year (each rollup split to fit Google's per-type range cap), which exceeded
+ * both the 10 ms CPU budget and the 50-subrequest cap there.
  */
 async function opTrendReport(ctx: Ctx, a: Record<string, unknown>) {
   const start = normalizeDate(String(a.start_date ?? ""));
@@ -417,21 +550,10 @@ async function opTrendReport(ctx: Ctx, a: Record<string, unknown>) {
   const samples = requested ? DAILY_SAMPLE_TYPES.filter((m) => requested.includes(m)) : DAILY_SAMPLE_TYPES;
   const wantSleep = !requested || requested.includes("sleep");
 
-  // total-calories caps at window_size_days * page_size <= 14, so long ranges
-  // are walked in chunks rather than failing with INVALID_ROLLUP_QUERY_DURATION.
-  const rollupTasks = rollups.map((type) => {
-    const cap = DAILY_ROLLUP_MAX_DURATION_DAYS[type];
-    if (!cap || span <= cap) {
-      return settle(snakeType(type), opDailyRollup(ctx, { data_type: type, start_date: start, end_date: end }));
-    }
-    const chunks: Array<Promise<unknown>> = [];
-    for (let offset = 0; offset < span; offset += cap) {
-      const chunkStart = shiftDate(start, offset);
-      const chunkEnd = shiftDate(start, Math.min(offset + cap, span));
-      chunks.push(opDailyRollup(ctx, { data_type: type, start_date: chunkStart, end_date: chunkEnd }));
-    }
-    return settle(snakeType(type), Promise.all(chunks).then((parts) => ({ chunked: true, parts })));
-  });
+  // Each rollup is split to fit its type's range cap (14 or 90 days) inside opDailyRollup.
+  const rollupTasks = rollups.map((type) =>
+    settle(snakeType(type), opDailyRollup(ctx, { data_type: type, start_date: start, end_date: end })),
+  );
 
   const entries = await Promise.all([
     ...rollupTasks,
@@ -459,6 +581,36 @@ async function opConnectionStatus(ctx: Ctx) {
   };
 }
 
+// The Google Health API has no endpoint that lists data types (GET
+// /v4/users/me/dataTypes answers 404), so the readable types are listed here from
+// the published reference: https://developers.google.com/health/data-types
+// Write-only types (menstrual-period, moods, ovulation-test, symptoms) are left out.
+const DATA_TYPE_CATALOG = {
+  activity: [
+    "steps", "distance", "floors", "altitude", "active-minutes", "active-zone-minutes",
+    "active-energy-burned", "total-calories", "calories-in-heart-rate-zone", "time-in-heart-rate-zone",
+    "activity-level", "sedentary-period", "exercise", "swim-lengths-data", "vo2-max", "daily-vo2-max",
+    "run-vo2-max",
+  ],
+  heart_and_vitals: [
+    "heart-rate", "daily-resting-heart-rate", "heart-rate-variability", "daily-heart-rate-variability",
+    "daily-heart-rate-zones", "oxygen-saturation", "daily-oxygen-saturation", "daily-respiratory-rate",
+    "respiratory-rate-sleep-summary", "core-body-temperature", "daily-sleep-temperature-derivations",
+    "blood-glucose",
+  ],
+  body: ["weight", "body-fat", "height"],
+  sleep: ["sleep"],
+  nutrition: ["nutrition-log", "hydration-log", "food", "food-measurement-unit"],
+  clinical: ["electrocardiogram", "irregular-rhythm-notification"],
+};
+
+const DATA_TYPE_NOTES = [
+  "total-calories and calories-in-heart-rate-zone are aggregates only: read them with health_daily_rollup or health_rollup.",
+  "daily-* types hold one value per day: read them with health_list_data_points and a <type>.date filter, e.g. daily_resting_heart_rate.date >= \"2026-09-01\".",
+  "Filters name the type in snake_case (heart_rate.sample_time.physical_time); tool arguments use kebab-case (heart-rate).",
+  "A type with no data for this account returns an empty list, not an error.",
+];
+
 // ---------------------------------------------------------------------------
 // Tool catalog
 // ---------------------------------------------------------------------------
@@ -483,9 +635,14 @@ export const TOOLS: Array<{ name: string; description: string; inputSchema: unkn
   },
   {
     name: "health_list_data_types",
-    description: "List every Google Health data type available to this account (names, units, structure).",
+    description:
+      "List the Google Health data type names this server can read, grouped by category, with notes on which tool reads each. Use it to find the exact kebab-case name before calling another tool.",
     inputSchema: { type: "object", properties: {} },
-    handler: (ctx) => apiRequest(ctx, "GET", "/v4/users/me/dataTypes", { params: { pageSize: 200 } }),
+    handler: async () => ({
+      source: "Google Health API reference (the API has no list endpoint)",
+      data_types: DATA_TYPE_CATALOG,
+      notes: DATA_TYPE_NOTES,
+    }),
   },
   {
     name: "health_get_profile",
@@ -531,7 +688,7 @@ export const TOOLS: Array<{ name: string; description: string; inputSchema: unkn
   {
     name: "health_daily_rollup",
     description:
-      "Per-day aggregates of one data type over a date range — steps/day, calories/day, weight over time. end_date is exclusive.",
+      "Per-day aggregates of one data type over a date range — steps/day, calories/day, weight over time. end_date is exclusive. Long ranges are split to fit Google's per-type limit (14 days for total-calories and heart-rate, 90 for most types) and every page is returned in one list.",
     inputSchema: {
       type: "object",
       properties: {
@@ -539,8 +696,8 @@ export const TOOLS: Array<{ name: string; description: string; inputSchema: unkn
         start_date: str("YYYY-MM-DD inclusive"),
         end_date: str("YYYY-MM-DD exclusive (default: start_date + 1)"),
         window_size_days: num("Aggregate window in days (default 1)"),
-        page_size: num("Max windows per page"),
-        page_token: str("Token from a previous page"),
+        page_size: num("Max windows per upstream page (all pages are fetched)"),
+        page_token: str("Only to page by hand: returns that single page"),
         source_family: sourceFamilyProp,
       },
       required: ["data_type", "start_date"],
@@ -599,14 +756,15 @@ export const TOOLS: Array<{ name: string; description: string; inputSchema: unkn
   },
   {
     name: "health_reconcile_data_points",
-    description: "Changed data points since a previous sync cursor — incremental sync without re-reading history.",
+    description:
+      "Data points of one type merged across sources into a single deduplicated stream (overlapping records from several devices or syncs resolved into one). Accepts the same filter syntax as health_list_data_points.",
     inputSchema: {
       type: "object",
       properties: {
         data_type: str("Kebab-case data type"),
         filter: str("Optional filter expression"),
         page_size: num("Max points per page"),
-        page_token: str("Reconcile cursor from a previous call"),
+        page_token: str("Token from a previous page"),
         source_family: sourceFamilyProp,
       },
       required: ["data_type"],
@@ -620,10 +778,16 @@ export const TOOLS: Array<{ name: string; description: string; inputSchema: unkn
 // ---------------------------------------------------------------------------
 
 interface RpcMessage {
-  jsonrpc?: string;
-  id?: number | string | null;
-  method?: string;
-  params?: Record<string, unknown>;
+  jsonrpc?: unknown;
+  id?: unknown;
+  method?: unknown;
+  params?: unknown;
+}
+
+const INVALID_REQUEST = { code: -32600, message: "Invalid Request" };
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // Cloud Run has no 10 ms CPU ceiling, so this is about the model's context
@@ -637,8 +801,19 @@ function toolResultText(data: unknown): string {
     : text;
 }
 
-async function handleRpc(ctx: Ctx, msg: RpcMessage): Promise<Record<string, unknown> | null> {
-  const { id, method, params } = msg;
+async function handleRpc(ctx: Ctx, raw: unknown): Promise<Record<string, unknown> | null> {
+  if (!isObject(raw)) return { jsonrpc: "2.0", id: null, error: INVALID_REQUEST };
+  const msg = raw as RpcMessage;
+  // A reply to a server-initiated request. This server never sends one, so accept and ignore it.
+  if (msg.method === undefined && ("result" in msg || "error" in msg)) return null;
+  const idOk = msg.id === undefined || msg.id === null || typeof msg.id === "string" || typeof msg.id === "number";
+  if (msg.jsonrpc !== "2.0" || typeof msg.method !== "string" || !idOk) {
+    const badId = typeof msg.id === "string" || typeof msg.id === "number" ? msg.id : null;
+    return { jsonrpc: "2.0", id: badId, error: INVALID_REQUEST };
+  }
+  const method = msg.method;
+  const id = msg.id as string | number | null | undefined;
+  const params = isObject(msg.params) ? msg.params : undefined;
   const isNotification = id === undefined || id === null;
   const reply = (result: unknown) => (isNotification ? null : { jsonrpc: "2.0", id, result });
   const fail = (code: number, message: string) =>
@@ -667,7 +842,7 @@ async function handleRpc(ctx: Ctx, msg: RpcMessage): Promise<Record<string, unkn
         const name = String(params?.name ?? "");
         const tool = TOOLS.find((t) => t.name === name);
         if (!tool) return fail(-32602, `Unknown tool: ${name}`);
-        const args = (params?.arguments as Record<string, unknown>) ?? {};
+        const args = isObject(params?.arguments) ? params.arguments : {};
         try {
           const data = await tool.handler(ctx, args);
           return reply({ content: [{ type: "text", text: toolResultText(data) }] });
@@ -681,7 +856,7 @@ async function handleRpc(ctx: Ctx, msg: RpcMessage): Promise<Record<string, unkn
       case "prompts/list":
         return reply({ prompts: [] });
       default:
-        if (method?.startsWith("notifications/")) return null;
+        if (method.startsWith("notifications/")) return null;
         return fail(-32601, `Method not found: ${method}`);
     }
   } catch (err) {
@@ -700,14 +875,17 @@ async function handleMcp(request: Request, ctx: Ctx): Promise<Response> {
   }
 
   if (Array.isArray(body)) {
-    const replies = (await Promise.all(body.map((m) => handleRpc(ctx, m as RpcMessage)))).filter(
+    // JSON-RPC 2.0: an empty batch is itself an invalid request.
+    if (body.length === 0) return json(400, { jsonrpc: "2.0", id: null, error: INVALID_REQUEST });
+    const replies = (await Promise.all(body.map((m) => handleRpc(ctx, m)))).filter(
       (r): r is Record<string, unknown> => r !== null,
     );
     return replies.length === 0 ? new Response(null, { status: 202 }) : json(200, replies);
   }
 
-  const reply = await handleRpc(ctx, body as RpcMessage);
-  return reply === null ? new Response(null, { status: 202 }) : json(200, reply);
+  const reply = await handleRpc(ctx, body);
+  if (reply === null) return new Response(null, { status: 202 });
+  return json(reply.error === INVALID_REQUEST ? 400 : 200, reply);
 }
 
 // ---------------------------------------------------------------------------

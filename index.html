@@ -167,7 +167,7 @@
         <div class="term-bar"><span class="dot"></span><span>terminal</span></div>
         <pre><code><span class="c"># deploy: Cloud Build reads the Dockerfile — no local Docker needed</span>
 <span class="p">$ </span>cd cloudrun &amp;&amp; gcloud run deploy health-mcp --source . --region us-central1 \
-      --set-secrets=GH_CLIENT_ID=gh-client-id:latest,SECRET_PATH=health-mcp-secret-path:latest
+      --set-secrets=GH_CLIENT_ID=gh-client-id:latest,GH_CLIENT_SECRET=gh-client-secret:latest,SECRET_PATH=health-mcp-secret-path:latest
 
 <span class="c"># authorize once in any browser — tokens land in Firestore, then refresh themselves</span>
 <span class="p">$ </span>open "https://$SERVICE_URL/$SECRET/authorize"
