@@ -742,10 +742,16 @@ export const TOOLS: Array<{ name: string; description: string; inputSchema: unkn
 // ---------------------------------------------------------------------------
 
 interface RpcMessage {
-  jsonrpc?: string;
-  id?: number | string | null;
-  method?: string;
-  params?: Record<string, unknown>;
+  jsonrpc?: unknown;
+  id?: unknown;
+  method?: unknown;
+  params?: unknown;
+}
+
+const INVALID_REQUEST = { code: -32600, message: "Invalid Request" };
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // Cloud Run has no 10 ms CPU ceiling, so this is about the model's context
@@ -759,8 +765,19 @@ function toolResultText(data: unknown): string {
     : text;
 }
 
-async function handleRpc(ctx: Ctx, msg: RpcMessage): Promise<Record<string, unknown> | null> {
-  const { id, method, params } = msg;
+async function handleRpc(ctx: Ctx, raw: unknown): Promise<Record<string, unknown> | null> {
+  if (!isObject(raw)) return { jsonrpc: "2.0", id: null, error: INVALID_REQUEST };
+  const msg = raw as RpcMessage;
+  // A reply to a server-initiated request. This server never sends one, so accept and ignore it.
+  if (msg.method === undefined && ("result" in msg || "error" in msg)) return null;
+  const idOk = msg.id === undefined || msg.id === null || typeof msg.id === "string" || typeof msg.id === "number";
+  if (msg.jsonrpc !== "2.0" || typeof msg.method !== "string" || !idOk) {
+    const badId = typeof msg.id === "string" || typeof msg.id === "number" ? msg.id : null;
+    return { jsonrpc: "2.0", id: badId, error: INVALID_REQUEST };
+  }
+  const method = msg.method;
+  const id = msg.id as string | number | null | undefined;
+  const params = isObject(msg.params) ? msg.params : undefined;
   const isNotification = id === undefined || id === null;
   const reply = (result: unknown) => (isNotification ? null : { jsonrpc: "2.0", id, result });
   const fail = (code: number, message: string) =>
@@ -789,7 +806,7 @@ async function handleRpc(ctx: Ctx, msg: RpcMessage): Promise<Record<string, unkn
         const name = String(params?.name ?? "");
         const tool = TOOLS.find((t) => t.name === name);
         if (!tool) return fail(-32602, `Unknown tool: ${name}`);
-        const args = (params?.arguments as Record<string, unknown>) ?? {};
+        const args = isObject(params?.arguments) ? params.arguments : {};
         try {
           const data = await tool.handler(ctx, args);
           return reply({ content: [{ type: "text", text: toolResultText(data) }] });
@@ -803,7 +820,7 @@ async function handleRpc(ctx: Ctx, msg: RpcMessage): Promise<Record<string, unkn
       case "prompts/list":
         return reply({ prompts: [] });
       default:
-        if (method?.startsWith("notifications/")) return null;
+        if (method.startsWith("notifications/")) return null;
         return fail(-32601, `Method not found: ${method}`);
     }
   } catch (err) {
@@ -822,14 +839,17 @@ async function handleMcp(request: Request, ctx: Ctx): Promise<Response> {
   }
 
   if (Array.isArray(body)) {
-    const replies = (await Promise.all(body.map((m) => handleRpc(ctx, m as RpcMessage)))).filter(
+    // JSON-RPC 2.0: an empty batch is itself an invalid request.
+    if (body.length === 0) return json(400, { jsonrpc: "2.0", id: null, error: INVALID_REQUEST });
+    const replies = (await Promise.all(body.map((m) => handleRpc(ctx, m)))).filter(
       (r): r is Record<string, unknown> => r !== null,
     );
     return replies.length === 0 ? new Response(null, { status: 202 }) : json(200, replies);
   }
 
-  const reply = await handleRpc(ctx, body as RpcMessage);
-  return reply === null ? new Response(null, { status: 202 }) : json(200, reply);
+  const reply = await handleRpc(ctx, body);
+  if (reply === null) return new Response(null, { status: 202 });
+  return json(reply.error === INVALID_REQUEST ? 400 : 200, reply);
 }
 
 // ---------------------------------------------------------------------------
