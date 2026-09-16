@@ -1,6 +1,6 @@
 {
   "name": "health-mcp-cloudrun",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "description": "Single-user Google Health API v4 MCP server on Cloud Run — read-only, tokens in Firestore, identity/location redaction.",

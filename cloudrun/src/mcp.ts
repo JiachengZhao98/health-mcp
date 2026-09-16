@@ -40,7 +40,7 @@ const SCOPES = [
   "https://www.googleapis.com/auth/googlehealth.irn.readonly",
 ];
 
-const SERVER_INFO = { name: "health-mcp", version: "2.0.0" };
+const SERVER_INFO = { name: "health-mcp", version: "2.1.0" };
 const SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const SOURCE_FAMILIES = ["all-sources", "google-wearables", "google-sources"] as const;
 
