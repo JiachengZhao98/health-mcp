@@ -930,12 +930,21 @@ async function handleAuthorize(request: Request, ctx: Ctx): Promise<Response> {
   return new Response(null, { status: 302, headers: { Location: `${AUTH_URL}?${params}`, "Cache-Control": "no-store" } });
 }
 
+// Matches the output of randomToken(16): exactly 22 base64url characters.
+const STATE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+
 async function handleCallback(request: Request, ctx: Ctx): Promise<Response> {
   const url = new URL(request.url);
-  const code = url.searchParams.get("code");
+  const code = url.searchParams.get("code") ?? "";
   const state = url.searchParams.get("state") ?? "";
-  const verifier = state ? await ctx.store.takeState(state) : null;
-  if (!code || !verifier) {
+  if (!state || !STATE_PATTERN.test(state) || !code || code.length > 2048) {
+    return new Response("Invalid or expired authorization attempt. Start again from your /authorize URL.", {
+      status: 400,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+  const verifier = await ctx.store.takeState(state);
+  if (!verifier) {
     return new Response("Invalid or expired authorization attempt. Start again from your /authorize URL.", {
       status: 400,
       headers: { "Content-Type": "text/plain" },

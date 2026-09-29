@@ -23,13 +23,19 @@ export interface Store {
   takeState(state: string): Promise<string | null>;
 }
 
+function isValidStateKey(state: string): boolean {
+  return state !== "" && state !== "." && state !== ".." && !state.includes("/");
+}
+
 /** Firestore-backed store used in production. */
 export class FirestoreStore implements Store {
   // Typed loosely so the module only has to load when actually used.
+  private readonly db: any;
   private readonly tokensDoc: any;
   private readonly states: any;
 
   constructor(db: any, collection = "health_mcp") {
+    this.db = db;
     this.tokensDoc = db.collection(collection).doc("google_tokens");
     this.states = db.collection(collection).doc("google_tokens").collection("oauth_states");
   }
@@ -44,20 +50,29 @@ export class FirestoreStore implements Store {
   }
 
   async putState(state: string, verifier: string, ttlSeconds: number): Promise<void> {
+    if (!isValidStateKey(state)) throw new Error("Invalid state key");
+    const now = Math.floor(Date.now() / 1000);
     await this.states.doc(state).set({
       verifier,
-      expires_at: Math.floor(Date.now() / 1000) + ttlSeconds,
+      expires_at: now + ttlSeconds,
+      // Firestore TTL policy field — enable with:
+      // gcloud firestore fields ttls update expire_at --collection-group=oauth_states --enable-ttl
+      expire_at: new Date((now + ttlSeconds) * 1000),
     });
   }
 
+  // Atomic read-then-delete so two concurrent callbacks can't both consume one nonce.
   async takeState(state: string): Promise<string | null> {
+    if (!isValidStateKey(state)) return null;
     const ref = this.states.doc(state);
-    const snap = await ref.get();
-    if (!snap.exists) return null;
-    const data = snap.data() as { verifier: string; expires_at: number };
-    await ref.delete().catch(() => undefined); // single-use, whatever happens next
-    if (!data.expires_at || data.expires_at < Math.floor(Date.now() / 1000)) return null;
-    return data.verifier;
+    return this.db.runTransaction(async (tx: any) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      tx.delete(ref);
+      const data = snap.data() as { verifier: string; expires_at: number };
+      if (!data.expires_at || data.expires_at < Math.floor(Date.now() / 1000)) return null;
+      return data.verifier;
+    });
   }
 }
 
@@ -75,10 +90,12 @@ export class MemoryStore implements Store {
   }
 
   async putState(state: string, verifier: string, ttlSeconds: number): Promise<void> {
+    if (!isValidStateKey(state)) throw new Error("Invalid state key");
     this.states.set(state, { verifier, expiresAt: Date.now() + ttlSeconds * 1000 });
   }
 
   async takeState(state: string): Promise<string | null> {
+    if (!isValidStateKey(state)) return null;
     const entry = this.states.get(state);
     this.states.delete(state);
     if (!entry || entry.expiresAt < Date.now()) return null;

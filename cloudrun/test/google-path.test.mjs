@@ -327,6 +327,84 @@ test("health_list_data_types answers from the local catalog without calling Goog
   assert.ok(!names.includes("symptoms"), "write-only types are not listed");
 });
 
+// ---- Fix 3: OAuth state validation ----------------------------------------------------------
+class SpyStore extends MemoryStore {
+  takeStateCalls = 0;
+  async takeState(state) {
+    this.takeStateCalls++;
+    return super.takeState(state);
+  }
+}
+
+test("callback rejects path-traversal state without calling the store", async () => {
+  const spyStore = new SpyStore();
+  const spyApp = createApp(env, spyStore);
+  await new Promise((resolve) => spyApp.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${spyApp.address().port}`;
+  try {
+    for (const state of ["a/b/c", "../../../health_mcp/google_tokens", ".", "..", ""]) {
+      const res = await realFetch(`${origin}/oauth/callback?code=x&state=${encodeURIComponent(state)}`);
+      assert.equal(res.status, 400, `state=${state}`);
+      assert.equal(spyStore.takeStateCalls, 0, `takeState was called for state=${state}`);
+    }
+    // A valid-format state that was never issued: takeState IS called, returns null → 400
+    const validFormat = "abcdefghijklmnopqrstuv"; // 22 chars
+    const res = await realFetch(`${origin}/oauth/callback?code=x&state=${validFormat}`);
+    assert.equal(res.status, 400);
+    assert.equal(spyStore.takeStateCalls, 1);
+  } finally {
+    spyApp.close();
+  }
+});
+
+test("callback rejects missing or oversized code", async () => {
+  const spyStore = new SpyStore();
+  const spyApp = createApp(env, spyStore);
+  await new Promise((resolve) => spyApp.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${spyApp.address().port}`;
+  try {
+    const state22 = "abcdefghijklmnopqrstuv";
+    // no code
+    const res1 = await realFetch(`${origin}/oauth/callback?state=${state22}`);
+    assert.equal(res1.status, 400);
+    // oversized code
+    const res2 = await realFetch(`${origin}/oauth/callback?code=${"x".repeat(2049)}&state=${state22}`);
+    assert.equal(res2.status, 400);
+    assert.equal(spyStore.takeStateCalls, 0);
+  } finally {
+    spyApp.close();
+  }
+});
+
+test("FirestoreStore guards: takeState rejects slash in state, putState rejects it", async () => {
+  // Use a fake db that records calls
+  const calls = [];
+  const fakeDb = {
+    collection: () => ({
+      doc: () => ({
+        collection: () => ({
+          doc: (id) => {
+            calls.push(id);
+            return { set: async () => {}, get: async () => ({ exists: false }) };
+          },
+        }),
+        get: async () => ({ exists: false }),
+        set: async () => {},
+      }),
+    }),
+    runTransaction: async (fn) => fn({
+      get: async (ref) => ({ exists: false }),
+      delete: () => {},
+    }),
+  };
+
+  const { FirestoreStore } = await import("../dist/store.js");
+  const fs = new FirestoreStore(fakeDb);
+  assert.equal(await fs.takeState("a/b"), null);
+  assert.equal(calls.length, 0);
+  await assert.rejects(() => fs.putState("a/b", "v", 60), /Invalid state key/);
+});
+
 // ---- JSON-RPC messages -------------------------------------------------------------------
 test("malformed messages get -32600 instead of a 500 or silence", async () => {
   const bodies = [
