@@ -7,7 +7,7 @@ Everything lives in the same Google Cloud project as the OAuth client and the he
 - **MCP over Streamable HTTP** — stateless JSON, works as a claude.ai custom connector
 - **OAuth handled by the service** — one browser consent; tokens in Firestore; automatic refresh
 - **Read-only** — 8 `googlehealth.*.readonly` scopes, nothing else
-- **Structured-mode privacy filter** — identity and location keys stripped from every response before the model sees it (key lists ported from `google-health-mcp-unofficial`, MIT — credit to its authors)
+- **Two-layer privacy filter** — `health_get_profile` uses an allowlist (only units, time zone, stride, and device type/model/battery); everything else passes a best-effort denylist that strips identity, credential, and location keys before the model sees them (key lists ported from `google-health-mcp-unofficial`, MIT — credit to its authors)
 - **No CPU ceiling**, unlike the edge version: `health_trend_report` pulls every headline metric across up to 366 days in one call
 
 ## Access model — read before deploying

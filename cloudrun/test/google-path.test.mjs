@@ -305,6 +305,92 @@ test("the filter strips identity, credential and location keys in any casing", (
   });
 });
 
+test("the filter strips all audit-flagged identity keys and rewrites users/<id>", () => {
+  const input = {
+    name: "users/1234567890/dataTypes/steps",
+    displayName: "Morning run",
+    dateOfBirth: "1990-01-01",
+    birthDate: "1990-01-01",
+    birthday: "1990-01-01",
+    gender: "male",
+    sex: "M",
+    userId: "123",
+    user_id: "123",
+    encodedId: "abc",
+    phoneNumber: "+1234567890",
+    phone: "+1",
+    address: "123 Main St",
+    streetAddress: "123 Main St",
+    postalCode: "12345",
+    zipCode: "12345",
+    serialNumber: "XYZ",
+    deviceSerial: "XYZ",
+    macAddress: "AA:BB:CC",
+    nickname: "buddy",
+    locationName: "Columbus",
+    placeName: "Home",
+    city: "Columbus",
+    country: "US",
+    region: "OH",
+    steps: { count: 100 },
+  };
+  const result = sanitize(input);
+  assert.equal(result.name, "users/me/dataTypes/steps");
+  assert.equal(result.displayName, "Morning run");
+  assert.equal(result.steps.count, 100);
+  for (const key of [
+    "dateOfBirth", "birthDate", "birthday", "gender", "sex",
+    "userId", "user_id", "encodedId", "phoneNumber", "phone",
+    "address", "streetAddress", "postalCode", "zipCode",
+    "serialNumber", "deviceSerial", "macAddress", "nickname",
+    "locationName", "placeName", "city", "country", "region",
+  ]) {
+    assert.equal(result[key], undefined, `${key} should be stripped`);
+  }
+});
+
+test("exercise data keeps displayName for activity names", () => {
+  const exercise = { displayName: "Morning run", steps: 5000, heartRate: 120 };
+  const result = sanitize(exercise);
+  assert.equal(result.displayName, "Morning run");
+  assert.equal(result.steps, 5000);
+});
+
+test("health_get_profile returns only allowlisted fields", async () => {
+  await authorize();
+  reset(() =>
+    Response.json({
+      name: "users/1234567890/profile",
+      age: 36,
+      gender: "male",
+      displayName: "Jane",
+      dateOfBirth: "1990-01-01",
+      membershipStartDate: { year: 2020, month: 1, day: 15 },
+      userConfiguredWalkingStrideLengthMm: 700,
+      timeZone: "America/New_York",
+      distanceUnit: "METRIC",
+      languageLocale: "en_US",
+      utcOffset: "-04:00",
+      macAddress: "AA:BB:CC",
+    }),
+  );
+  const { result, payload } = await callTool("health_get_profile", {});
+  assert.ok(!result.isError);
+  // Profile allowlist: stride lengths, membership date — no name/age/gender/birth
+  assert.ok(payload.profile.userConfiguredWalkingStrideLengthMm);
+  assert.ok(payload.profile.membershipStartDate);
+  assert.equal(payload.profile.age, undefined);
+  assert.equal(payload.profile.gender, undefined);
+  assert.equal(payload.profile.displayName, undefined);
+  assert.equal(payload.profile.dateOfBirth, undefined);
+  assert.equal(payload.profile.name, undefined);
+  // Settings allowlist
+  assert.equal(payload.settings.timeZone, "America/New_York");
+  assert.equal(payload.settings.distanceUnit, "METRIC");
+  assert.equal(payload.settings.macAddress, undefined);
+  assert.equal(payload.settings.name, undefined);
+});
+
 test("every Google response passes through the filter before reaching the model", async () => {
   await authorize();
   reset(() =>

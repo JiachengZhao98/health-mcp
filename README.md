@@ -42,7 +42,7 @@ npx -y google-health-mcp-unofficial doctor --live
 
 ### Cloud Run
 
-[`cloudrun/`](cloudrun/) is a single-user MCP server over Streamable HTTP that works as a claude.ai custom connector, so a question asked from a phone gets an answer with no computer switched on. OAuth is handled by the service itself — one browser consent, tokens in Firestore, refreshed automatically — and every response passes a filter that strips identity and location keys before the model sees them. There is no login on the endpoint: every route sits under a 256-bit secret path segment, which is the credential.
+[`cloudrun/`](cloudrun/) is a single-user MCP server over Streamable HTTP that works as a claude.ai custom connector, so a question asked from a phone gets an answer with no computer switched on. OAuth is handled by the service itself — one browser consent, tokens in Firestore, refreshed automatically — and every response passes a privacy filter — the profile endpoint uses an allowlist (only units, time zone, stride, paired device type/battery), and all other responses pass a best-effort denylist that strips identity and location keys — before the model sees them. There is no login on the endpoint: every route sits under a 256-bit secret path segment, which is the credential.
 
 ```bash
 cd cloudrun && gcloud run deploy health-mcp --source . --region us-central1 \

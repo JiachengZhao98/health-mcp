@@ -73,11 +73,19 @@ function normalizeKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+// Best-effort denylist for identity and credential keys.  health_get_profile
+// uses an allowlist (PROFILE_ALLOWED / SETTINGS_ALLOWED) instead; this list
+// catches leaks in every other response.
 const SENSITIVE_KEYS = new Set(
   [
     "email", "fullName", "firstName", "lastName", "avatar", "photoUrl",
     "access_token", "refresh_token", "id_token", "authorization", "legacyUserId",
     "tcxLink", "client_secret", "api_key", "password",
+    "dateOfBirth", "birthDate", "birthday",
+    "gender", "sex", "phone", "phoneNumber",
+    "address", "streetAddress", "postalCode", "zipCode",
+    "userId", "user_id", "encodedId",
+    "serialNumber", "deviceSerial", "macAddress", "nickname",
   ].map(normalizeKey),
 );
 
@@ -89,6 +97,7 @@ const GPS_LEAF_KEYS = new Set(
     "latitudeE7", "longitudeE7", "latE7", "lngE7", "lonE7",
     "startLatitudeE7", "startLongitudeE7", "endLatitudeE7", "endLongitudeE7",
     "lat_deg", "lng_deg", "lon_deg", "latitudeDegrees", "longitudeDegrees",
+    "locationName", "placeName", "city", "country", "region",
   ].map(normalizeKey),
 );
 
@@ -105,9 +114,17 @@ function holdsObject(value: unknown): boolean {
   return value !== null && typeof value === "object";
 }
 
+const USERS_ID_RE = /\busers\/\d+(?=\/|$)/g;
+
 export function sanitize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sanitize);
-  if (value === null || typeof value !== "object") return value;
+  if (value === null || typeof value !== "object") {
+    if (typeof value === "string" && USERS_ID_RE.test(value)) {
+      USERS_ID_RE.lastIndex = 0;
+      return value.replace(USERS_ID_RE, "users/me");
+    }
+    return value;
+  }
   const out: Record<string, unknown> = {};
   for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
     const nk = normalizeKey(key);
@@ -115,6 +132,54 @@ export function sanitize(value: unknown): unknown {
     if (GPS_LEAF_KEYS.has(nk)) continue;
     if (GPS_CONTAINER_KEYS.has(nk) && holdsObject(v)) continue;
     out[key] = sanitize(v);
+  }
+  return out;
+}
+
+// Allowlisted fields for health_get_profile (profile + settings endpoints).
+// Built from the published schema at developers.google.com/health/reference/rest.
+// Identity fields (name, age, gender, birth*, address, phone, etc.) are excluded
+// even though the API may return them — the tool description promises redaction.
+const PROFILE_ALLOWED = new Set([
+  "membershipStartDate",
+  "userConfiguredWalkingStrideLengthMm",
+  "userConfiguredRunningStrideLengthMm",
+  "autoWalkingStrideLengthMm",
+  "autoRunningStrideLengthMm",
+]);
+
+const SETTINGS_ALLOWED = new Set([
+  "autoStrideEnabled",
+  "distanceUnit",
+  "glucoseUnit",
+  "heightUnit",
+  "languageLocale",
+  "utcOffset",
+  "strideLengthWalkingType",
+  "strideLengthRunningType",
+  "swimUnit",
+  "temperatureUnit",
+  "timeZone",
+  "weightUnit",
+  "waterUnit",
+  "foodLanguageCode",
+]);
+
+const DEVICE_ALLOWED = new Set([
+  "deviceType",
+  "batteryStatus",
+  "batteryLevel",
+  "lastSyncTime",
+  "deviceVersion",
+  "features",
+]);
+
+function pickAllowed(value: unknown, allowed: Set<string>): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => pickAllowed(v, allowed));
+  const out: Record<string, unknown> = {};
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    if (allowed.has(key)) out[key] = v;
   }
   return out;
 }
@@ -651,10 +716,16 @@ export const TOOLS: Array<{ name: string; description: string; inputSchema: unkn
     description:
       "Read the user's Google Health profile and settings (display units, time zone, paired devices). Identity fields are redacted.",
     inputSchema: { type: "object", properties: {} },
-    handler: async (ctx) => ({
-      profile: await apiRequest(ctx, "GET", "/v4/users/me/profile"),
-      settings: await apiRequest(ctx, "GET", "/v4/users/me/settings"),
-    }),
+    handler: async (ctx) => {
+      const [profile, settings] = await Promise.all([
+        apiRequest(ctx, "GET", "/v4/users/me/profile"),
+        apiRequest(ctx, "GET", "/v4/users/me/settings"),
+      ]);
+      return {
+        profile: pickAllowed(profile, PROFILE_ALLOWED),
+        settings: pickAllowed(settings, SETTINGS_ALLOWED),
+      };
+    },
   },
   {
     name: "health_daily_summary",
