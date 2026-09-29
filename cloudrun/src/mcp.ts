@@ -417,9 +417,19 @@ function clampPageSize(value: unknown, fallback: number, max = 1000): number {
   return Math.min(Math.max(n, 1), max);
 }
 
+const DATA_TYPE_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+function dataTypeArg(a: Record<string, unknown>): string {
+  const raw = String(a.data_type ?? "").trim();
+  if (!raw) throw new Error("data_type is required (e.g. steps, sleep, heart-rate)");
+  if (!DATA_TYPE_PATTERN.test(raw)) {
+    throw new Error("data_type must be a kebab-case data type name, e.g. steps or heart-rate");
+  }
+  return raw;
+}
+
 async function opListDataPoints(ctx: Ctx, a: Record<string, unknown>) {
-  const dataType = String(a.data_type ?? "").trim();
-  if (!dataType) throw new Error("data_type is required (e.g. steps, sleep, heart-rate)");
+  const dataType = dataTypeArg(a);
   return apiRequest(ctx, "GET", `/v4/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints`, {
     params: {
       pageSize: clampPageSize(a.page_size, 200),
@@ -430,8 +440,7 @@ async function opListDataPoints(ctx: Ctx, a: Record<string, unknown>) {
 }
 
 async function opReconcile(ctx: Ctx, a: Record<string, unknown>) {
-  const dataType = String(a.data_type ?? "").trim();
-  if (!dataType) throw new Error("data_type is required");
+  const dataType = dataTypeArg(a);
   return apiRequest(ctx, "GET", `/v4/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints:reconcile`, {
     params: {
       pageSize: clampPageSize(a.page_size, 200),
@@ -493,8 +502,7 @@ function newestFirst(chunks: unknown[][]): unknown[] {
 }
 
 async function opDailyRollup(ctx: Ctx, a: Record<string, unknown>) {
-  const dataType = String(a.data_type ?? "").trim();
-  if (!dataType) throw new Error("data_type is required");
+  const dataType = dataTypeArg(a);
   const startDate = normalizeDate(String(a.start_date ?? ""));
   const endDate = a.end_date ? normalizeDate(String(a.end_date)) : nextDate(startDate);
   const windowSizeDays = parseWindowSizeDays(a.window_size_days);
@@ -533,8 +541,7 @@ async function opDailyRollup(ctx: Ctx, a: Record<string, unknown>) {
 }
 
 async function opRollup(ctx: Ctx, a: Record<string, unknown>) {
-  const dataType = String(a.data_type ?? "").trim();
-  if (!dataType) throw new Error("data_type is required");
+  const dataType = dataTypeArg(a);
   const startTime = String(a.start_time ?? "");
   const endTime = String(a.end_time ?? "");
   if (!startTime || !endTime || Date.parse(startTime) >= Date.parse(endTime)) {
@@ -634,14 +641,18 @@ async function opTrendReport(ctx: Ctx, a: Record<string, unknown>) {
 async function opConnectionStatus(ctx: Ctx) {
   const tokens = await ctx.store.readTokens();
   const now = Math.floor(Date.now() / 1000);
+  const granted = tokens?.scope?.split(" ") ?? [];
+  const ignorable = new Set(["openid", "email", "profile"]);
+  const unexpected = granted.filter((s) => !SCOPES.includes(s) && !ignorable.has(s));
   return {
     server: SERVER_INFO,
     host: "Google Cloud Run",
     authorized: Boolean(tokens?.access_token),
     has_refresh_token: Boolean(tokens?.refresh_token),
     access_token_expires_in_s: tokens?.expires_at ? tokens.expires_at - now : null,
-    granted_scopes: tokens?.scope?.split(" ") ?? [],
-    privacy_mode: "structured (identity + location keys removed)",
+    granted_scopes: granted,
+    unexpected_scopes: unexpected,
+    privacy_mode: "structured (allowlist for profile, denylist elsewhere)",
     hint: tokens?.access_token
       ? "Ready."
       : "Open your saved /authorize URL in a browser to connect Google Health.",
@@ -992,7 +1003,7 @@ async function handleAuthorize(request: Request, ctx: Ctx): Promise<Response> {
     response_type: "code",
     scope: SCOPES.join(" "),
     access_type: "offline",
-    include_granted_scopes: "true",
+    include_granted_scopes: "false",
     prompt: "consent",
     state,
     code_challenge: await sha256b64url(verifier),
@@ -1029,6 +1040,14 @@ async function handleCallback(request: Request, ctx: Ctx): Promise<Response> {
   });
   const scope = tokens.scope ?? url.searchParams.get("scope") ?? undefined;
   await ctx.store.writeTokens({ ...tokens, scope });
+  if (scope) {
+    const granted = scope.split(" ");
+    const ignorable = new Set(["openid", "email", "profile"]);
+    const unexpected = granted.filter((s) => !SCOPES.includes(s) && !ignorable.has(s));
+    if (unexpected.length > 0) {
+      console.warn(`Unexpected scopes granted: ${unexpected.join(", ")}`);
+    }
+  }
   const scopeCount = scope ? scope.split(" ").length : 0;
   return new Response(
     `<!doctype html><meta charset="utf-8"><title>Connected</title>

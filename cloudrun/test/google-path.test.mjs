@@ -491,6 +491,40 @@ test("FirestoreStore guards: takeState rejects slash in state, putState rejects 
   await assert.rejects(() => fs.putState("a/b", "v", 60), /Invalid state key/);
 });
 
+// ---- Fix 5: scope hygiene and data_type validation -----------------------------------------
+test("authorize URL no longer has include_granted_scopes=true", async () => {
+  const res = await realFetch(`${base}/sek/authorize`, { redirect: "manual" });
+  assert.equal(res.status, 302);
+  const location = new URL(res.headers.get("location"));
+  assert.notEqual(location.searchParams.get("include_granted_scopes"), "true");
+});
+
+test("data_type with path traversal is rejected before calling Google", async () => {
+  await authorize();
+  reset();
+  for (const bad of ["..", "steps/../x", "STEPS", "steps/evil", "steps..x"]) {
+    const { result } = await callTool("health_list_data_points", { data_type: bad });
+    assert.equal(result.isError, true, `${bad} should be rejected`);
+    assert.match(result.content[0].text, /kebab-case/, `${bad} error message`);
+  }
+  assert.equal(google.calls.length, 0);
+});
+
+test("connection status shows unexpected_scopes when stored scope has an extra entry", async () => {
+  await store.writeTokens({
+    access_token: "at",
+    refresh_token: "rt",
+    scope: "https://www.googleapis.com/auth/googlehealth.profile.readonly https://www.googleapis.com/auth/calendar.readonly",
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+  });
+  reset();
+  const { payload } = await callTool("health_connection_status", {});
+  assert.ok(payload.unexpected_scopes.includes("https://www.googleapis.com/auth/calendar.readonly"));
+  assert.ok(!payload.unexpected_scopes.includes("https://www.googleapis.com/auth/googlehealth.profile.readonly"));
+  // restore for subsequent tests
+  await authorize();
+});
+
 // ---- JSON-RPC messages -------------------------------------------------------------------
 test("malformed messages get -32600 instead of a 500 or silence", async () => {
   const bodies = [
