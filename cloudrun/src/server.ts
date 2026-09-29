@@ -43,6 +43,16 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   }
   if (missing.length > 0) throw new Error(`Missing required environment variable(s): ${missing.join(", ")}`);
 
+  const SECRET_PATTERN = /^[A-Za-z0-9_-]{32,}$/;
+  if (!SECRET_PATTERN.test(values.SECRET_PATH)) {
+    const msg = "SECRET_PATH must be at least 32 URL-safe characters (generate one with: openssl rand -hex 32)";
+    if (source.HEALTH_MCP_STORE === "memory") {
+      console.warn(msg);
+    } else {
+      throw new Error(msg);
+    }
+  }
+
   // The three values are easy to cross-wire, and Google reports the result as a
   // bare "invalid_client" on the consent screen with no hint as to which one is
   // wrong. Their shapes are distinctive, so say so here instead. A real client

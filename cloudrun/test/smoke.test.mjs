@@ -169,8 +169,9 @@ test("authorized status flows through once tokens exist", async () => {
 });
 
 test("loadEnv trims whitespace so a newline-terminated secret still routes", () => {
-  const loaded = loadEnv({ GH_CLIENT_ID: " id\n", GH_CLIENT_SECRET: "secret\n", SECRET_PATH: "abc123\n" });
-  assert.deepEqual(loaded, { GH_CLIENT_ID: "id", GH_CLIENT_SECRET: "secret", SECRET_PATH: "abc123" });
+  const secret64 = "a".repeat(64);
+  const loaded = loadEnv({ GH_CLIENT_ID: " id\n", GH_CLIENT_SECRET: "secret\n", SECRET_PATH: secret64 + "\n" });
+  assert.deepEqual(loaded, { GH_CLIENT_ID: "id", GH_CLIENT_SECRET: "secret", SECRET_PATH: secret64 });
 });
 
 test("loadEnv names every missing variable instead of exiting", () => {
@@ -222,7 +223,7 @@ test("loadEnv warns when the client ID and secret are swapped", () => {
     loadEnv({
       GH_CLIENT_ID: "GOCSPX-abc",
       GH_CLIENT_SECRET: "123.apps.googleusercontent.com",
-      SECRET_PATH: "abc123",
+      SECRET_PATH: "a".repeat(64),
     });
   } finally {
     console.warn = warn;
@@ -233,8 +234,6 @@ test("loadEnv warns when the client ID and secret are swapped", () => {
 });
 
 test("loadEnv rejects a project ID wearing the client-ID suffix", () => {
-  // The failure this catches: substituting a project ID into the deploy
-  // snippet's YOUR_CLIENT_ID placeholder. Google's reply is "invalid_client".
   const warnings = [];
   const warn = console.warn;
   console.warn = (msg) => warnings.push(String(msg));
@@ -242,7 +241,7 @@ test("loadEnv rejects a project ID wearing the client-ID suffix", () => {
     loadEnv({
       GH_CLIENT_ID: "health-claude-mcp.apps.googleusercontent.com",
       GH_CLIENT_SECRET: "GOCSPX-x",
-      SECRET_PATH: "abc123",
+      SECRET_PATH: "a".repeat(64),
     });
   } finally {
     console.warn = warn;
@@ -317,10 +316,41 @@ test("loadEnv stays quiet for well-formed client IDs", () => {
   console.warn = (msg) => warnings.push(String(msg));
   try {
     for (const id of ["907789864489-a1b2c3d4.apps.googleusercontent.com", "123456789012.apps.googleusercontent.com"]) {
-      loadEnv({ GH_CLIENT_ID: id, GH_CLIENT_SECRET: "GOCSPX-x", SECRET_PATH: "abc123" });
+      loadEnv({ GH_CLIENT_ID: id, GH_CLIENT_SECRET: "GOCSPX-x", SECRET_PATH: "a".repeat(64) });
     }
   } finally {
     console.warn = warn;
   }
   assert.deepEqual(warnings, []);
+});
+
+// --- Fix 2: secret strength validation ----------------------------------------
+test("loadEnv throws on weak SECRET_PATH without memory store", () => {
+  assert.throws(
+    () => loadEnv({ GH_CLIENT_ID: "id", GH_CLIENT_SECRET: "s", SECRET_PATH: "short" }),
+    /SECRET_PATH must be at least 32 URL-safe characters/,
+  );
+});
+
+test("loadEnv warns but continues on weak SECRET_PATH with memory store", () => {
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (msg) => warnings.push(String(msg));
+  try {
+    const result = loadEnv({
+      GH_CLIENT_ID: "id",
+      GH_CLIENT_SECRET: "s",
+      SECRET_PATH: "dev",
+      HEALTH_MCP_STORE: "memory",
+    });
+    assert.equal(result.SECRET_PATH, "dev");
+    assert.equal(warnings.filter((w) => /at least 32/.test(w)).length, 1);
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test("redactPath still maps correct secret to :secret, wrong to :bad-secret", () => {
+  assert.equal(redactPath("/sekret123/mcp", "sekret123"), "/:secret/mcp");
+  assert.equal(redactPath("/wrong/mcp", "sekret123"), "/:bad-secret/mcp");
 });

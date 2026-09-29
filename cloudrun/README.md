@@ -166,6 +166,8 @@ npm run check                # typecheck
 npm test                     # 37 tests: the real HTTP server end to end, plus the Google calls against a stubbed fetch
 npm run build && GH_CLIENT_ID=x GH_CLIENT_SECRET=y SECRET_PATH=dev \
   HEALTH_MCP_STORE=memory npm start        # in-memory store, no Firestore needed
+# Weak SECRET_PATH values (< 32 chars) are allowed only with HEALTH_MCP_STORE=memory;
+# production requires at least 32 URL-safe characters (openssl rand -hex 32).
 ```
 
 `HEALTH_MCP_STORE=memory` swaps Firestore for an in-process store — useful for protocol work, useless for real data (tokens vanish on restart).
