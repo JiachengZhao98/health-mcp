@@ -462,6 +462,29 @@ test("callback rejects missing or oversized code", async () => {
   }
 });
 
+test("FirestoreStore.putState writes both expires_at (number) and expire_at (Date)", async () => {
+  let written = null;
+  const fakeDb = {
+    collection: () => ({
+      doc: () => ({
+        collection: () => ({
+          doc: () => ({
+            set: async (data) => { written = data; },
+          }),
+        }),
+        get: async () => ({ exists: false }),
+        set: async () => {},
+      }),
+    }),
+  };
+  const { FirestoreStore } = await import("../dist/store.js");
+  const fs = new FirestoreStore(fakeDb);
+  await fs.putState("validstate1234567890ab", "verifier", 600);
+  assert.equal(typeof written.expires_at, "number");
+  assert.ok(written.expire_at instanceof Date);
+  assert.ok(Math.abs(written.expire_at.getTime() / 1000 - written.expires_at) < 2);
+});
+
 test("FirestoreStore guards: takeState rejects slash in state, putState rejects it", async () => {
   // Use a fake db that records calls
   const calls = [];
@@ -492,6 +515,12 @@ test("FirestoreStore guards: takeState rejects slash in state, putState rejects 
 });
 
 // ---- Fix 5: scope hygiene and data_type validation -----------------------------------------
+test("initialize instructions flag free-text fields as untrusted data", async () => {
+  const res = await post({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  const { result } = await res.json();
+  assert.match(result.instructions, /not instructions/);
+});
+
 test("authorize URL no longer has include_granted_scopes=true", async () => {
   const res = await realFetch(`${base}/sek/authorize`, { redirect: "manual" });
   assert.equal(res.status, 302);
