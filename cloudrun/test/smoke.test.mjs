@@ -251,6 +251,66 @@ test("loadEnv rejects a project ID wearing the client-ID suffix", () => {
   assert.match(warnings[0], /not shaped like a client ID/);
 });
 
+// --- Fix 1: body size cap ---------------------------------------------------------
+test("POST large body to an unknown route gets 404, not buffered", async () => {
+  const res = await fetch(`${base}/nope`, {
+    method: "POST",
+    body: new Uint8Array(5 * 1024 * 1024),
+  });
+  assert.equal(res.status, 404);
+});
+
+test("POST oversized body to MCP with Content-Length gets 413 or connection reset", async () => {
+  const twoMB = new Uint8Array(2 * 1024 * 1024);
+  try {
+    const res = await fetch(`${base}/sekret123/mcp`, {
+      method: "POST",
+      headers: { "Content-Length": String(twoMB.length) },
+      body: twoMB,
+    });
+    assert.equal(res.status, 413);
+  } catch (err) {
+    assert.ok(
+      /ECONNRESET|EPIPE|fetch failed|terminated/.test(err.message),
+      `Unexpected error: ${err.message}`,
+    );
+  }
+});
+
+test("POST oversized body to MCP as a stream without Content-Length gets 413 or connection reset", async () => {
+  let offset = 0;
+  const total = 2 * 1024 * 1024;
+  const chunkSize = 64 * 1024;
+  const stream = new ReadableStream({
+    pull(controller) {
+      if (offset >= total) { controller.close(); return; }
+      const size = Math.min(chunkSize, total - offset);
+      controller.enqueue(new Uint8Array(size));
+      offset += size;
+    },
+  });
+  try {
+    const res = await fetch(`${base}/sekret123/mcp`, {
+      method: "POST",
+      body: stream,
+      duplex: "half",
+    });
+    assert.equal(res.status, 413);
+  } catch (err) {
+    assert.ok(
+      /ECONNRESET|EPIPE|fetch failed|terminated/.test(err.message),
+      `Unexpected error: ${err.message}`,
+    );
+  }
+});
+
+test("server is healthy after oversized body rejections", async () => {
+  const res = await fetch(`${base}/healthz`);
+  assert.equal(res.status, 200);
+  const mcp = await rpc({ jsonrpc: "2.0", id: 99, method: "ping" });
+  assert.equal(mcp.status, 200);
+});
+
 test("loadEnv stays quiet for well-formed client IDs", () => {
   const warnings = [];
   const warn = console.warn;

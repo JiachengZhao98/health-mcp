@@ -10,8 +10,17 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { pathToFileURL } from "node:url";
 import { Firestore } from "@google-cloud/firestore";
-import { handleRequest, type Env } from "./mcp.js";
+import { handleRequest, isSecretSegment, type Env } from "./mcp.js";
 import { FirestoreStore, MemoryStore, type Store } from "./store.js";
+
+// MCP JSON-RPC requests from claude.ai are tiny; 1 MiB is generous.
+const MAX_BODY_BYTES = 1024 * 1024;
+
+export class PayloadTooLarge extends Error {
+  constructor() {
+    super("Payload too large");
+  }
+}
 
 /**
  * Read config, trimming surrounding whitespace.
@@ -63,15 +72,29 @@ export function redactPath(path: string, secret: string): string {
   const segments = path.split("/");
   const first = segments[1];
   if (first && first !== "healthz" && first !== "oauth") {
-    segments[1] = first === secret ? ":secret" : ":bad-secret";
+    segments[1] = isSecretSegment(first, secret) ? ":secret" : ":bad-secret";
   }
   return segments.join("/");
 }
 
-function readBody(req: IncomingMessage): Promise<Buffer> {
+function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    const declared = req.headers["content-length"];
+    if (declared !== undefined && Number(declared) > maxBytes) {
+      reject(new PayloadTooLarge());
+      return;
+    }
     const chunks: Buffer[] = [];
-    req.on("data", (chunk) => chunks.push(chunk as Buffer));
+    let received = 0;
+    req.on("data", (chunk: Buffer) => {
+      received += chunk.length;
+      if (received > maxBytes) {
+        reject(new PayloadTooLarge());
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
@@ -112,21 +135,43 @@ async function writeResponse(res: ServerResponse, response: Response): Promise<v
   res.end(body.length > 0 ? body : undefined);
 }
 
+function needsBody(method: string, segments: string[], secret: string): boolean {
+  return (
+    method === "POST" &&
+    segments.length === 2 &&
+    isSecretSegment(segments[0], secret) &&
+    segments[1] === "mcp"
+  );
+}
+
 export function createApp(env: Env, store: Store) {
   return createServer(async (req, res) => {
     const started = Date.now();
+    const pathname = (req.url ?? "/").split("?")[0];
+    const segments = pathname.split("/").filter(Boolean);
     try {
-      const request = toRequest(req, await readBody(req));
+      let body: Buffer;
+      if (needsBody(req.method ?? "GET", segments, env.SECRET_PATH)) {
+        body = await readBody(req, MAX_BODY_BYTES);
+      } else {
+        req.resume();
+        body = Buffer.alloc(0);
+      }
+      const request = toRequest(req, body);
       const response = await handleRequest(request, env, store);
       await writeResponse(res, response);
-      // Log the shape of traffic, never its contents.
-      const path = redactPath((req.url ?? "/").split("?")[0], env.SECRET_PATH);
+      const path = redactPath(pathname, env.SECRET_PATH);
       console.log(`${req.method} ${path} -> ${response.status} (${Date.now() - started}ms)`);
     } catch (err) {
-      // Name the route and the provider's error code. An opaque 500 in Cloud
-      // Run's request log is otherwise the only trace a failed dependency
-      // leaves, and that log cannot say which call failed or why.
-      const path = redactPath((req.url ?? "/").split("?")[0], env.SECRET_PATH);
+      const path = redactPath(pathname, env.SECRET_PATH);
+      if (err instanceof PayloadTooLarge) {
+        console.log(`${req.method} ${path} -> 413 (${Date.now() - started}ms)`);
+        if (!res.headersSent) {
+          res.writeHead(413, { "Content-Type": "application/json", Connection: "close" });
+          res.end(JSON.stringify({ error: "Payload too large" }), () => req.destroy());
+        }
+        return;
+      }
       const code = (err as { code?: unknown }).code;
       console.error(
         `Unhandled error on ${req.method} ${path}${code === undefined ? "" : ` [code ${String(code)}]`}:`,

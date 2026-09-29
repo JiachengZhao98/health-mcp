@@ -18,6 +18,8 @@
  */
 
 import type { Store, StoredTokens } from "./store.js";
+import { isSecretSegment } from "./secret.js";
+export { isSecretSegment };
 
 export interface Env {
   GH_CLIENT_ID: string;
@@ -977,7 +979,7 @@ export async function handleRequest(request: Request, env: Env, store: Store): P
     return handleCallback(request, ctx);
   }
 
-  if (segments.length === 2 && env.SECRET_PATH && segments[0] === env.SECRET_PATH) {
+  if (segments.length === 2 && isSecretSegment(segments[0], env.SECRET_PATH)) {
     switch (segments[1]) {
       case "mcp":
         return handleMcp(request, ctx);
